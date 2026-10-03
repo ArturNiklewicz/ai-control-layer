@@ -5,6 +5,7 @@ the age private key, and an explicit "yes". It is sealed with sops and expires.
 No valid grant + PII found => callers block (fail closed), they never transform silently.
 """
 
+import hmac
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -30,11 +31,12 @@ def grant(
 
 
 def allows(g: Grant | None, action: str, now: datetime) -> bool:
-    return g is not None and action in g.actions and g.granted_at <= now < g.expires_at
+    return g is not None and action in g.actions and g.granted_at <= now < g.expires_at  # future grant: denied
 
 
-def to_json(g: Grant) -> dict:
+def to_json(g: Grant, nonce: str) -> dict:
     return {
+        "nonce": nonce,
         "user": g.user,
         "actions": sorted(g.actions),
         "granted_at": g.granted_at.isoformat(),
@@ -43,14 +45,20 @@ def to_json(g: Grant) -> dict:
     }
 
 
-def from_json(raw: Mapping) -> Grant | None:
+def from_json(raw: Mapping, nonce: str, hours: float) -> Grant | None:
+    """The nonce lives only on the host (login writes it, logout deletes it): a grant forged with the
+    public age key, copied from a past login, or stretched beyond the policy ttl is no grant."""
     try:
-        return Grant(
+        g = Grant(
             str(raw["user"]),
             frozenset(raw["actions"]) & frozenset(ACTIONS),
             datetime.fromisoformat(raw["granted_at"]),
             datetime.fromisoformat(raw["expires_at"]),
             str(raw.get("method", "")),
         )
+        sealed = str(raw["nonce"])
     except (KeyError, TypeError, ValueError):
         return None  # unreadable grant == no grant
+    if not nonce or not hmac.compare_digest(sealed, nonce):
+        return None
+    return g if g.expires_at - g.granted_at <= timedelta(hours=hours) else None

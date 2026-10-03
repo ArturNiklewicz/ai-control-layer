@@ -11,6 +11,7 @@ uv run python -m src.guard.cli logout
 
 import argparse
 import getpass
+import hashlib
 import ipaddress
 import os
 import secrets
@@ -34,7 +35,7 @@ from src.guard.pii import (
 )
 from src.guard.policy import Policy, load
 from src.guard.scrub import Blocked, NoConsent, as_anonymize, scrub
-from src.guard.vault import load_sealed, save_sealed
+from src.guard.vault import atomic_write, load_pinned, load_sealed, save_pinned, save_sealed
 from src.result import Err, Ok, Result
 
 ROOT = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()
@@ -66,12 +67,33 @@ def is_local(url: str) -> bool:
     )
 
 
-def current_grant() -> Grant | None:
+def state() -> Path:
+    """Host-only secrets (grant nonce, vault pin) live outside the repo; the sandbox never mounts them."""
+    base = Path(os.environ.get("GUARD_STATE") or Path.home() / ".config" / "guard")
+    return base / hashlib.sha256(str(ROOT).encode()).hexdigest()[:16]
+
+
+def read_nonce() -> str:
+    p = state() / "grant-nonce"
+    return p.read_text().strip() if p.is_file() else ""
+
+
+def current_grant(hours: float | None = None) -> Grant | None:
+    if hours is None:
+        match load(Path(os.environ.get("GUARD_POLICY") or ROOT / "src/guard/policy.toml")):
+            case Ok(p):
+                hours = p.consent_hours
+            case _:
+                return None
     match load_sealed(GRANT):
         case Ok(raw) if raw:
-            return from_json(raw)
+            return from_json(raw, read_nonce(), hours)
         case _:
-            return None  # missing, tampered or undecryptable == no consent
+            return None  # missing, tampered, forged or undecryptable == no consent
+
+
+def vault_pin() -> Path:
+    return state() / "vault-hash"
 
 
 # --- login: the only way to create consent ---
@@ -105,9 +127,16 @@ def cmd_login(policy: Policy, args) -> int:
         audit.record(ROOT, {"event": "consent", "user": user, "verdict": "deny"}, now())
         return fail("no consent given")
     g = grant(user, frozenset(ACTIONS), now(), policy.consent_hours, "tty+age-key")
-    match save_sealed(GRANT, to_json(g), policy.age_recipient):
+    host_nonce = secrets.token_hex(32)
+    match save_sealed(GRANT, to_json(g, host_nonce), policy.age_recipient):
         case Err(e):
             return fail(e.detail)
+    try:
+        state().mkdir(parents=True, exist_ok=True, mode=0o700)
+        atomic_write(state() / "grant-nonce", host_nonce)
+    except OSError as e:
+        GRANT.unlink(missing_ok=True)
+        return fail(f"cannot store host nonce: {e}")
     audit.record(ROOT, {"event": "consent", "user": user, "verdict": "allow", "actions": sorted(g.actions),
                         "expires_at": g.expires_at.isoformat()}, now())  # fmt: skip
     print(f"Zgoda zapisana do {g.expires_at:%Y-%m-%d %H:%M} UTC.")
@@ -116,6 +145,7 @@ def cmd_login(policy: Policy, args) -> int:
 
 def cmd_logout(policy: Policy, args) -> int:
     GRANT.unlink(missing_ok=True)
+    (state() / "grant-nonce").unlink(missing_ok=True)  # kills every copy of the old grant
     audit.record(
         ROOT,
         {"event": "consent", "verdict": "revoked", "user": getpass.getuser()},
@@ -196,7 +226,7 @@ def cmd_scan(policy: Policy, args) -> int:
 def cmd_transform(policy: Policy, args) -> int:
     mode = args.cmd
     pol = as_anonymize(policy) if mode == "anonymize" else policy
-    g, t = current_grant(), now()
+    g, t = current_grant(policy.consent_hours), now()
     if not allows(g, mode, t):
         return fail(
             "no valid consent: the user must run `uv run python -m src.guard.cli login`"
@@ -204,7 +234,7 @@ def cmd_transform(policy: Policy, args) -> int:
     vault_path = ROOT / policy.vault_path
     vault: dict = {}
     if mode == "pseudonymize":
-        match load_sealed(vault_path):
+        match load_pinned(vault_path, vault_pin()):
             case Ok(v):
                 vault = v
             case Err(e):
@@ -222,7 +252,7 @@ def cmd_transform(policy: Policy, args) -> int:
         r = find_spans(text, pol).bind(
             lambda spans: scrub(text, spans, pol, vault, lambda a: allows(g, a, t))  # type: ignore[arg-type]
         )
-        event = {"event": mode, "user": g.user if g else None, "file": f.name}
+        event = {"event": mode, "user": g.user if g else None, "file": hashlib.sha256(os.path.relpath(f, ROOT).encode()).hexdigest()[:12]}
         match r:
             case Ok(done):
                 dest.parent.mkdir(parents=True, exist_ok=True)
@@ -248,17 +278,17 @@ def cmd_transform(policy: Policy, args) -> int:
                 )
                 status = fail(f"{f}: {e}")
     if mode == "pseudonymize":
-        match save_sealed(vault_path, vault, policy.age_recipient):
+        match save_pinned(vault_path, vault, policy.age_recipient, vault_pin()):
             case Err(e):
                 return fail(f"vault not saved: {e.detail}")
     return status
 
 
 def cmd_restore(policy: Policy, args) -> int:
-    g, t = current_grant(), now()
+    g, t = current_grant(policy.consent_hours), now()
     if not allows(g, "pseudonymize", t):
         return fail("no valid consent: run `login` first")
-    match load_sealed(ROOT / policy.vault_path):
+    match load_pinned(ROOT / policy.vault_path, vault_pin()):
         case Ok(vault):
             sys.stdout.write(restore(Path(args.path).read_text(), vault))
             audit.record(

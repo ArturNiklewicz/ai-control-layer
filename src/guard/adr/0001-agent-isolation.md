@@ -282,11 +282,12 @@ sequenceDiagram
 | ID  | Ryzyko                                                                      | Prawdopodobieństwo | Mitygacja / dalsze kroki                                                           |
 | --- | --------------------------------------------------------------------------- | ------------------ | ---------------------------------------------------------------------------------- |
 | R1  | Dane przeczytane przez agenta trafiają do API modelu (dozwolony kanał)      | średnie            | tylko `data/clean` w repo; skan PII na odczytach; docelowo model lokalny           |
-| R2  | Audyt zapisywany przez proces o tym samym UID co agent: możliwa manipulacja | średnie            | ADR-0002: wysyłka audytu poza kontener (Langfuse na DGX-B lub sidecar append-only) |
+| R2  | Audyt zapisywany przez proces o tym samym UID co agent: możliwa manipulacja | średnie            | otwarte: agent może zapisać tylko plik audytu (osobny mount rw, `GUARD_AUDIT_PATH`), nie `.guard/`; pełna naprawa = ADR-0002 (sidecar append-only) |
 | R3  | Poświadczenia API w wolumenie `claude-home`                                 | niskie             | klucz o wąskim zakresie, rotacja, limity wydatków po stronie dostawcy              |
 | R4  | Kod agenta uruchomiony później na hoście (np. testy)                        | niskie             | testy tylko w kontenerze; review diffu przed merge                                 |
 | R5  | Ucieczka z kontenera (jądro / Docker)                                       | bardzo niskie      | VM Docker Desktop jako druga granica; ścieżka: opcja D (microVM)                   |
 | R6  | Trasa do tailnetu z kontenera zależy od sieci Docker Desktop                | do weryfikacji     | test łączności w `run.sh`; fallback: regex-only z `semantic_on_error`              |
+| R7  | Sfałszowana zgoda / podmieniony sejf (agent zna publiczny klucz age)        | zamknięte          | `.guard/` tylko do odczytu w kontenerze; zgoda niesie nonce z `~/.config/guard/<hash repo>/` (poza mountem, kasowany przy `logout`), sejf przypięty hashem w tym samym miejscu; TTL zgody ograniczony polityką |
 
 ## 10. Weryfikacja (kryteria akceptacji)
 
@@ -295,7 +296,8 @@ Test ataku `tests/test_sandbox_escape.py`, uruchamiany w kontenerze przez `run.s
 | Test                                                                                                 | Oczekiwany wynik                    |
 | ---------------------------------------------------------------------------------------------------- | ----------------------------------- |
 | `open("~/.ssh/id_rsa")`, `open("~/.config/sops/age/keys.txt")`                                       | `FileNotFoundError`                 |
-| `open("/repo/.env").read()`                                                                          | pusty plik                          |
+| `open("/repo/.env").read()` (także `.env.*`, `secrets.env`, `*.pem`, `*.key` o ile istnieją)         | pusty plik                          |
+| zapis do `/repo/.guard/consent.sops.json`, `vault.sops.json`                                         | `OSError: EROFS`                    |
 | zapis do `/repo/.git/hooks/pre-commit`, `/repo/src/guard/policy.toml`, `/repo/.claude/settings.json` | `OSError: EROFS`                    |
 | `socket.connect(("example.com", 443))`, `("1.1.1.1", 53)`                                            | timeout / odmowa                    |
 | `connect(("100.117.237.101", 8006))`, `("api.anthropic.com", 443)`                                   | sukces (pozytywne)                  |

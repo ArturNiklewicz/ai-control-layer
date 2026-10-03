@@ -37,8 +37,9 @@ def test_host_secrets_do_not_exist(path):
 
 
 def test_env_file_is_masked():
-    assert (REPO / ".env").read_text() == ""
-    assert (REPO / "secrets.env").exists()  # committed file, encrypted; no age key to open it
+    for name in (".env", "secrets.env"):  # masked only when present on the host
+        if (REPO / name).exists():
+            assert (REPO / name).read_text() == ""
     assert shutil.which("sops") is None
 
 
@@ -49,6 +50,19 @@ def test_rules_and_git_are_read_only(path):
     with pytest.raises(OSError) as e:
         (REPO / path).write_text("pwned")
     assert e.value.errno == 30  # EROFS
+
+
+@pytest.mark.parametrize("name", ["consent.sops.json", "vault.sops.json", "challenge.sops.json"])
+def test_guard_state_is_read_only(name):  # agent must not forge consent or poison the vault
+    with pytest.raises(OSError) as e:
+        (REPO / ".guard" / name).write_text("forged")
+    assert e.value.errno == 30  # EROFS
+
+
+def test_audit_is_writable_through_its_own_mount():
+    log = os.environ.get("GUARD_AUDIT_PATH")
+    if log:  # set only by run.sh exec/claude, not selftest
+        Path(log).open("a").close()
 
 
 def test_repo_itself_is_writable():

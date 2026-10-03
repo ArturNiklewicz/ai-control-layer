@@ -1,6 +1,7 @@
 """Policy parsing, consent, scrub decisions, injection feed, vault shell, report."""
 
 import json
+import os
 import shutil
 import subprocess
 from datetime import UTC, datetime, timedelta
@@ -14,7 +15,8 @@ from src.guard.pii import detect
 from src.guard.policy import parse
 from src.guard.report import render
 from src.guard.scrub import Blocked, NoConsent, as_anonymize, scrub
-from src.guard.vault import load_sealed, save_sealed
+from src.guard import audit
+from src.guard.vault import load_pinned, load_sealed, save_pinned, save_sealed
 from src.result import Err, Ok
 from tests.guard_fixtures import RAW, ROOT, policy
 
@@ -53,8 +55,8 @@ def test_consent_scope_and_expiry():
     assert not allows(g, "pseudonymize", NOW + timedelta(hours=8))
     assert not allows(g, "pseudonymize", NOW - timedelta(seconds=1))
     assert not allows(None, "anonymize", NOW)
-    assert from_json(to_json(g)) == g
-    assert from_json({"user": "x"}) is None
+    assert from_json(to_json(g, "n"), "n", 8) == g
+    assert from_json({"user": "x"}, "n", 8) is None
 
 
 # --- scrub: block vs redact vs pseudonymize, consent gate ---
@@ -163,3 +165,97 @@ def test_report_counts_without_values():
     out = render(events, NOW)
     assert "decisions 3" in out and "deny 3" in out and "path-escape" in out and "PESEL" in out
     assert "old" not in out
+
+
+# --- agent-forgery regressions (agent can write .guard/ and knows the public age key) ---
+
+G = grant("artur", frozenset({"anonymize"}), NOW, 8, "tty+age-key")
+
+
+def test_grant_needs_the_host_nonce():  # finding 1, 4
+    raw = to_json(G, "secret")
+    assert from_json(raw, "secret", 8) == G
+    assert from_json(raw, "", 8) is None  # logged out: no host nonce, replayed copy is dead
+    assert from_json(raw, "other", 8) is None  # forged / copied from an older login
+    assert from_json({k: v for k, v in raw.items() if k != "nonce"}, "secret", 8) is None
+
+
+def test_grant_lifetime_is_capped_by_policy():  # finding 1
+    forged = to_json(G, "n") | {"expires_at": datetime(2099, 1, 1, tzinfo=UTC).isoformat()}
+    assert from_json(forged, "n", 8) is None
+    future = grant("a", frozenset({"anonymize"}), NOW + timedelta(days=1), 8, "x")
+    assert not allows(future, "anonymize", NOW)
+
+
+def sealed(*a, **k):
+    return subprocess.CompletedProcess(a, 0, '{"OSOBA_1": "x"}', "")
+
+
+def test_save_sealed_refuses_symlinks(tmp_path):  # finding 3
+    victim = tmp_path / "zshrc"
+    victim.write_text("keep")
+    (tmp_path / "v.json").symlink_to(victim)
+    assert isinstance(save_sealed(tmp_path / "v.json", {}, "age1x", sealed), Err)
+    real = tmp_path / "real"
+    real.mkdir()
+    (tmp_path / "link").symlink_to(real)
+    assert isinstance(save_sealed(tmp_path / "link" / "v.json", {}, "age1x", sealed), Err)
+    assert victim.read_text() == "keep"
+
+
+def test_save_sealed_ignores_planted_tmp_name(tmp_path):  # finding 3
+    victim = tmp_path / "zshrc"
+    victim.write_text("keep")
+    (tmp_path / "v.tmp").symlink_to(victim)
+    assert save_sealed(tmp_path / "v.json", {}, "age1x", sealed) == Ok(tmp_path / "v.json")
+    assert victim.read_text() == "keep"
+
+
+def test_vault_swapped_by_agent_is_refused(tmp_path):  # finding 2
+    v, pin = tmp_path / "vault.sops.json", tmp_path / "host" / "vault-hash"
+    assert save_pinned(v, {}, "age1x", pin, sealed) == Ok(v)
+    assert load_pinned(v, pin, sealed) == Ok({"OSOBA_1": "x"})
+    v.write_text('{"poison": 1}')
+    assert isinstance(load_pinned(v, pin, sealed), Err)
+    pin.unlink()
+    assert isinstance(load_pinned(v, pin, sealed), Err)  # no pin == not ours
+    assert load_pinned(tmp_path / "none.json", pin, sealed) == Ok({})
+
+
+def test_audit_refuses_symlinks(tmp_path, monkeypatch):  # finding 3
+    monkeypatch.delenv("GUARD_AUDIT_PATH", raising=False)
+    victim = tmp_path / "victim"
+    victim.write_text("keep")
+    (d := tmp_path / "repo" / ".guard").mkdir(parents=True)
+    (d / "audit.jsonl").symlink_to(victim)
+    with pytest.raises(OSError):
+        audit.record(tmp_path / "repo", {"event": "x"}, NOW)
+    (tmp_path / "g").mkdir()
+    (tmp_path / "r2").symlink_to(tmp_path / "g")
+    (tmp_path / "r2dir").mkdir()
+    (tmp_path / "r2dir" / ".guard").symlink_to(tmp_path / "g")
+    with pytest.raises(OSError):
+        audit.record(tmp_path / "r2dir", {"event": "x"}, NOW)
+    assert victim.read_text() == "keep" and not list((tmp_path / "g").iterdir())
+
+
+def test_audit_path_env_redirects_record_and_read(tmp_path, monkeypatch):
+    log = tmp_path / "ro-guard-elsewhere.jsonl"
+    monkeypatch.setenv("GUARD_AUDIT_PATH", str(log))
+    audit.record(tmp_path / "repo", {"event": "x"}, NOW)  # repo/.guard never touched
+    assert audit.read(tmp_path / "repo")[0]["event"] == "x" and not (tmp_path / "repo").exists()
+    assert oct(os.stat(log).st_mode & 0o777) == "0o600"
+
+
+def test_transform_audit_has_no_raw_filename(tmp_path, monkeypatch):  # finding 6
+    from src.guard import cli
+
+    monkeypatch.setattr(cli, "ROOT", tmp_path)
+    monkeypatch.setattr(cli, "current_grant", lambda h=None: G)
+    monkeypatch.delenv("GUARD_AUDIT_PATH", raising=False)
+    monkeypatch.setenv("GUARD_POLICY", str(ROOT / "src/guard/policy.toml"))
+    f = tmp_path / "Jan_Kowalski_PESEL.txt"
+    f.write_text("hej")
+    cli.main(["anonymize", str(f), "-o", str(tmp_path / "o.txt")])
+    log = (tmp_path / ".guard" / "audit.jsonl").read_text()
+    assert "Kowalski" not in log and '"file": "' in log
