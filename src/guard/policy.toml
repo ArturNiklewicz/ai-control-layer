@@ -38,6 +38,26 @@ age_recipient = "age1umrllqac6f5t9uehkcmf03htaxdcgzl240gyhzjv60eykkkkputq505mq2"
 base_url = "http://100.117.237.101:8006/v1"   # vLLM on DGX-A over tailscale (private)
 model = "qwen3-35b"
 
+[judge]                         # semantic injection judge on the [llm] model; runs only when signatures found nothing high
+enabled = true
+threshold = 0.7                 # score >= threshold = attack (then gateway.injection decides block/warn)
+on_error = "fail_closed"        # fail_closed: refuse if the judge is down | allow
+
+[gateway]                       # OpenAI-compatible LLM gateway (python -m src.guard.gateway)
+injection = "block"             # off | warn | block: signatures on user/tool messages
+pii_public = "pseudonymize"     # PII bound for a public model: block | pseudonymize (restored in reply)
+
+[gateway.models]                # allowed models; anything else is refused. USD per 1M tokens
+"qwen3-35b" = { upstream = "http://100.117.237.101:8006/v1", input_usd_mtok = 0.0, output_usd_mtok = 0.0 }
+"gpt-4o-mini" = { upstream = "https://api.openai.com/v1", key_env = "OPENAI_API_KEY", input_usd_mtok = 0.15, output_usd_mtok = 0.60 }
+
+# API key -> principal, sha256 only. New key: python -c "import secrets,hashlib;k=secrets.token_urlsafe(32);print(k,hashlib.sha256(k.encode()).hexdigest())"
+[gateway.principals.demo]       # demo key "demo-key-change-me": the gateway refuses it off loopback
+key_sha256 = "090d1548c9d65f413a1a2c828a0bee3a7ae02d2137caf51e6029e6c3cb1f1fa4"
+models = ["qwen3-35b", "gpt-4o-mini"]
+daily_tokens = 200000
+daily_usd = 1.00
+
 # ---------------------------------------------------------------- agent sandbox
 [paths]                         # repo-relative globs the agent may not touch (read or write)
 deny = [

@@ -30,6 +30,32 @@ class Agent:
 
 
 @dataclass(frozen=True, slots=True)
+class Model:
+    upstream: str  # OpenAI-compatible base_url
+    key_env: str  # env var holding the upstream key ("" = none)
+    input_usd_mtok: float
+    output_usd_mtok: float
+
+
+@dataclass(frozen=True, slots=True)
+class Principal:
+    """A gateway caller. Identity = API key (stored hashed), never a field in the request."""
+
+    key_sha256: str
+    models: tuple[str, ...]
+    daily_usd: float
+    daily_tokens: int
+
+
+@dataclass(frozen=True, slots=True)
+class Gateway:
+    models: Mapping[str, Model]  # the allowed-models list: anything else is refused
+    principals: Mapping[str, Principal]
+    injection: Screen
+    pii_public: Literal["block", "pseudonymize"]  # PII bound for a non-private upstream
+
+
+@dataclass(frozen=True, slots=True)
 class Policy:
     mode: Mode
     pii_default: Action
@@ -49,6 +75,9 @@ class Policy:
     screen_reads: Screen
     screen_tool_output: Screen
     consent_hours: float
+    gateway: Gateway
+    judge_threshold: float  # 0 = judge off; else score >= threshold counts as an attack
+    judge_fail_closed: bool
 
     def action(self, kind: str) -> Action:
         return self.pii_kinds.get(kind, self.pii_default)
@@ -98,6 +127,35 @@ def parse(raw: dict) -> Result[Policy, PolicyError]:
             )
             for name, o in {"default": {}, **raw.get("agents", {})}.items()
         }
+        gw = raw.get("gateway", {})
+        if gw.get("injection", "block") not in ("off", "warn", "block"):
+            return Err(PolicyError("gateway.injection must be off|warn|block"))
+        if gw.get("pii_public", "block") not in ("block", "pseudonymize"):
+            return Err(PolicyError("gateway.pii_public must be block|pseudonymize"))
+        models = {
+            name: Model(
+                m["upstream"].rstrip("/"),
+                m.get("key_env", ""),
+                float(m.get("input_usd_mtok", 0)),
+                float(m.get("output_usd_mtok", 0)),
+            )
+            for name, m in gw.get("models", {}).items()
+        }
+        principals = {
+            name: Principal(
+                p["key_sha256"].lower(),
+                tuple(p.get("models", models)),
+                float(p.get("daily_usd", 0)),
+                int(p.get("daily_tokens", 0)),
+            )
+            for name, p in gw.get("principals", {}).items()
+        }
+        if bad := {m for p in principals.values() for m in p.models} - set(models):
+            return Err(PolicyError(f"gateway principals reference unknown models {bad}"))
+        judge = raw.get("judge", {})
+        threshold = float(judge.get("threshold", 0)) if judge.get("enabled", False) else 0.0
+        if not 0 <= threshold <= 1:
+            return Err(PolicyError("judge.threshold must be in [0, 1]"))
         return Ok(
             Policy(
                 mode=mode,
@@ -119,9 +177,17 @@ def parse(raw: dict) -> Result[Policy, PolicyError]:
                 screen_reads=inj.get("reads", "warn"),
                 screen_tool_output=inj.get("tool_output", "block"),
                 consent_hours=float(raw.get("consent", {}).get("ttl_hours", 8)),
+                gateway=Gateway(
+                    models,
+                    principals,
+                    gw.get("injection", "block"),
+                    gw.get("pii_public", "block"),
+                ),
+                judge_threshold=threshold,
+                judge_fail_closed=judge.get("on_error", "fail_closed") == "fail_closed",
             )
         )
-    except (KeyError, TypeError, AttributeError) as e:
+    except (KeyError, TypeError, AttributeError, ValueError) as e:
         return Err(PolicyError(f"malformed policy: {e!r}"))
 
 
