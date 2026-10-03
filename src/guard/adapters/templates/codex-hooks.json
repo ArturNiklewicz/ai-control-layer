@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "PreToolUse":       [{"matcher": ".*", "hooks": [{"type": "command", "timeout": 15, "command": "uv run --frozen python -m src.guard.adapters.cli_hooks codex || exit 2"}]}],
+    "PostToolUse":      [{"matcher": ".*", "hooks": [{"type": "command", "timeout": 15, "command": "uv run --frozen python -m src.guard.adapters.cli_hooks codex || exit 2"}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "timeout": 15, "command": "uv run --frozen python -m src.guard.adapters.cli_hooks codex || exit 2"}]}]
+  }
+}

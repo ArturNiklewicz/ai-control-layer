@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "serena-guarded": {
+      "command": "uv",
+      "args": ["run", "--frozen", "python", "-m", "src.guard.mcp_proxy", "--server", "serena", "--", "uvx", "serena", "start-mcp-server"]
+    }
+  }
+}

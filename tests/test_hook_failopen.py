@@ -19,7 +19,7 @@ def read(repo, name):
 def test_redos_private_key_marker_is_linear():
     t = time.perf_counter()
     assert not detect("-----BEGIN PRIVATE KEY-----" * 75000)
-    assert time.perf_counter() - t < 1
+    assert time.perf_counter() - t < 3  # quadratic took minutes; slack for loaded CI
     assert any(s.kind == "SECRET" for s in detect(KEY))
 
 

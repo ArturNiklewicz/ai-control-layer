@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [{"command": "uv run --frozen python -m src.guard.adapters.cli_hooks cursor || exit 2", "timeout": 15, "failClosed": true}],
+    "beforeMCPExecution":   [{"command": "uv run --frozen python -m src.guard.adapters.cli_hooks cursor || exit 2", "timeout": 15, "failClosed": true}],
+    "beforeReadFile":       [{"command": "uv run --frozen python -m src.guard.adapters.cli_hooks cursor || exit 2", "timeout": 15, "failClosed": true}],
+    "beforeSubmitPrompt":   [{"command": "uv run --frozen python -m src.guard.adapters.cli_hooks cursor || exit 2", "timeout": 15, "failClosed": true}]
+  }
+}

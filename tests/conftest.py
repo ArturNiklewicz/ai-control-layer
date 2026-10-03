@@ -34,6 +34,7 @@ MARKERS = {
     "injection": "prompt injection / exploit signatures",
     "policy": "central policy, live reload, fail-closed",
     "audit": "audit log and report",
+    "harness": "harness adapters (Cursor, Gemini, Codex, Claude Agent SDK, OpenAI Agents, LangChain)",
 }
 
 

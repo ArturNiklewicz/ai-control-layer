@@ -1,0 +1,10 @@
+{
+  "hooks": {
+    "BeforeTool":  [{"matcher": ".*", "hooks": [{"type": "command", "name": "guard", "timeout": 15000,
+      "command": "cd \"$GEMINI_PROJECT_DIR\" && uv run --frozen python -m src.guard.adapters.cli_hooks gemini || exit 2"}]}],
+    "AfterTool":   [{"matcher": ".*", "hooks": [{"type": "command", "name": "guard", "timeout": 15000,
+      "command": "cd \"$GEMINI_PROJECT_DIR\" && uv run --frozen python -m src.guard.adapters.cli_hooks gemini || exit 2"}]}],
+    "BeforeAgent": [{"hooks": [{"type": "command", "name": "guard", "timeout": 15000,
+      "command": "cd \"$GEMINI_PROJECT_DIR\" && uv run --frozen python -m src.guard.adapters.cli_hooks gemini || exit 2"}]}]
+  }
+}
