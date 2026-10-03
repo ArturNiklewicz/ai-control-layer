@@ -6,6 +6,7 @@ uv run python -m src.guard.cli anonymize PATH [-o OUT]     # irreversible  [OSOB
 uv run python -m src.guard.cli pseudonymize PATH [-o OUT]  # reversible    [OSOBA_1]
 uv run python -m src.guard.cli restore FILE          # pseudonyms -> originals (key holder)
 uv run python -m src.guard.cli report                # audit summary for security / management
+uv run python -m src.guard.cli dashboard [-o PATH] [--open]  # interactive HTML report (offline)
 uv run python -m src.guard.cli logout
 """
 
@@ -308,6 +309,21 @@ def cmd_report(policy: Policy, args) -> int:
     return 0
 
 
+def cmd_dashboard(policy: Policy, args) -> int:
+    import webbrowser
+
+    from src.guard.report import render_html
+
+    out = Path(args.out) if args.out else ROOT / ".guard" / "dashboard.html"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write(out, render_html(audit.read(ROOT), now()))
+    out.chmod(0o600)
+    print(out)
+    if args.open:
+        webbrowser.open(out.resolve().as_uri())
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="guard",
@@ -318,6 +334,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("login")
     sub.add_parser("logout")
     sub.add_parser("report")
+    d = sub.add_parser("dashboard")
+    d.add_argument("-o", "--out")
+    d.add_argument("--open", action="store_true")
     s = sub.add_parser("scan")
     s.add_argument("paths", nargs="+")
     for name in ("anonymize", "pseudonymize"):
@@ -331,7 +350,7 @@ def main(argv: list[str] | None = None) -> int:
         case Err(e):
             return fail(e.detail)
         case Ok(policy):
-            handler = {"login": cmd_login, "logout": cmd_logout, "scan": cmd_scan, "report": cmd_report,
+            handler = {"login": cmd_login, "logout": cmd_logout, "scan": cmd_scan, "report": cmd_report, "dashboard": cmd_dashboard,
                        "anonymize": cmd_transform, "pseudonymize": cmd_transform, "restore": cmd_restore}  # fmt: skip
             return handler[args.cmd](policy, args)
 

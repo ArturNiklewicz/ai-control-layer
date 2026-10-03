@@ -6,3 +6,5 @@ __pycache__/
 docs/scratchpad/
 eval/results/*
 !eval/results/baseline-*
+.playwright-mcp/
+.serena/
