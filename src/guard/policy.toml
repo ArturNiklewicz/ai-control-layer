@@ -1,0 +1,90 @@
+# AI Control Layer — central policy. Read on every hook call / CLI run: edits apply instantly.
+# Invalid file => every agent action is denied (fail closed).
+
+version = 1
+# enforce: deny/ask as below.  monitor: never block, only log "would_deny" (rollout / tuning).
+mode = "enforce"
+
+# ---------------------------------------------------------------- PII & secrets
+[pii]
+# per-detection action: off | anonymize ([OSOBA]) | pseudonymize ([OSOBA_1], reversible
+# via encrypted vault) | block (whole document / tool call rejected)
+default = "pseudonymize"
+semantic = true                 # names + addresses via the local LLM in [llm]
+semantic_on_error = "fail_closed"   # fail_closed: no output if the LLM is down | regex_only
+scan_reads = true               # agent Read of a file with PII is denied -> use anonymized copy
+
+[pii.kinds]                     # stricter / looser per category
+SECRET = "block"                # keys, tokens, passwords: never leave, never written by agent
+CARD = "block"
+EMAIL = "anonymize"
+PHONE = "anonymize"
+# PESEL, NIP, REGON, IBAN, ID_CARD, PERSON, ADDRESS -> default (pseudonymize)
+
+[consent]                       # anonymize/pseudonymize only after `guard login`:
+ttl_hours = 8                   # TTY + proof of the age key + explicit yes; grant is sops-sealed
+
+[injection]                     # signature feed (replaceable by an external feed, same schema)
+feed = "src/guard/signatures.json"
+user_prompt = "warn"            # off | warn (audit only) | block — the human is the principal
+reads = "block"                 # files the agent reads: indirect injection vector
+tool_output = "block"           # MCP results: high-severity hit => content withheld
+
+[vault]                         # pseudonym <-> original; sops+age encrypted, never sent to an LLM
+path = ".guard/vault.sops.json"
+age_recipient = "age1umrllqac6f5t9uehkcmf03htaxdcgzl240gyhzjv60eykkkkputq505mq2"
+
+[llm]                           # semantic NER. MUST be local/private: public hosts are refused
+base_url = "http://100.117.237.101:8006/v1"   # vLLM on DGX-A over tailscale (private)
+model = "qwen3-35b"
+
+# ---------------------------------------------------------------- agent sandbox
+[paths]                         # repo-relative globs the agent may not touch (read or write)
+deny = [
+  ".env", ".env.*", "secrets.env", "*.pem", "*.key",
+  ".git/**",                    # hooks/config = code execution and remote rewrites
+  ".guard/**",                  # vault, audit log
+  ".claude/**",                 # agent may not rewrite its own hooks/permissions
+  "src/guard/**",               # nor this policy or the guard itself
+  "data/raw/**",                # raw documents: only the anonymized copies are readable
+]
+
+[commands]                      # whitelist of command prefixes; everything else is denied
+allow = [
+  "ls", "pwd", "cat", "head", "tail", "wc", "grep", "rg", "find", "diff", "sort", "uniq",
+  "echo", "mkdir", "touch", "cd",
+  "git status", "git diff", "git log", "git show", "git add", "git branch",
+  "git switch", "git restore", "git ls-files", "git blame", "git stash list",
+  "uv run pytest", "uv run --frozen pytest", "pytest",
+  "uv run python -m src.guard.cli scan",   # counts only; restore/pseudonymize stay human-only
+]
+ask = [                         # irreversible -> human confirms in the Claude Code prompt
+  "rm", "mv", "git commit", "git reset", "git checkout", "git stash drop", "git clean",
+]
+# forbidden anywhere in an allowed command. (`git -c x status` already fails the prefix match:
+# options before the subcommand never match "git status".)
+deny_tokens = [
+  "-C", "--git-dir", "--work-tree", "--exec-path",
+  "-exec", "-execdir", "-delete", "-ok", "--force", "-f", "-rf", "-fr",
+]
+
+[tools]
+deny = ["WebFetch", "WebSearch"]   # no data egress from the agent
+
+[mcp]                              # mcp__<server>__<tool> patterns (also enforced by mcp_proxy)
+allow = ["mcp__serena__find_*", "mcp__serena__get_*", "mcp__serena__list_*", "mcp__serena__read_*"]
+
+# ---------------------------------------------------------------- identities / roles
+# Identity = Claude Code's agent_type (subagents) or GUARD_AGENT set by the launcher.
+# The model cannot choose it. An identity not listed here is denied everything.
+[agents.default]
+
+[agents.reviewer]                  # read-only role
+commands = ["ls", "cat", "grep", "rg", "git diff", "git log", "git show", "git status"]
+ask = []
+tools_deny = ["Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"]
+
+[agents.Explore]                   # Claude Code's built-in read-only subagent
+commands = ["ls", "cat", "grep", "rg", "find", "git log", "git show", "git diff"]
+ask = []
+tools_deny = ["Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"]

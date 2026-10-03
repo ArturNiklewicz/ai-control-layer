@@ -1,0 +1,8 @@
+# Loader pobrany z repozytorium modelu (przykład niebezpiecznego kodu do testów)
+import pickle
+import torch
+from transformers import AutoModel
+
+weights = torch.load("pytorch_model.bin")
+state = pickle.loads(open("state.pkl", "rb").read())
+model = AutoModel.from_pretrained("someone/cool-model", trust_remote_code=True)

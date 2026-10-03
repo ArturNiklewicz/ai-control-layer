@@ -1,0 +1,18 @@
+[project]
+name = "ai-control-layer"
+version = "0.1.0"
+description = "Hybrid guardrails for agentic AI: PII, consent, agent sandbox, injection, audit"
+requires-python = ">=3.12"
+dependencies = ["openai>=1.60", "numpy>=2"]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "standard"
+exclude = ["tests/integration/corpus", ".venv"]

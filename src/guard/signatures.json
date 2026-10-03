@@ -1,0 +1,125 @@
+{
+  "_about": "Attack signature feed. Replaceable by an externally managed feed (same schema). severity: high=block, medium/low=warn by default.",
+  "version": "2026-10-03",
+  "signatures": [
+    {
+      "id": "PI-001",
+      "category": "prompt_injection",
+      "severity": "high",
+      "source": "OWASP LLM01",
+      "pattern": "(?i)\\b(ignore|disregard|forget|override)\\b.{0,30}\\b(previous|prior|above|earlier|all|system)\\b.{0,20}\\b(instructions?|prompts?|rules|messages?)"
+    },
+    {
+      "id": "PI-002",
+      "category": "prompt_injection",
+      "severity": "high",
+      "source": "OWASP LLM01 (PL)",
+      "pattern": "(?i)\\b(zignoruj|pomiń|pomin|zapomnij|nie stosuj)\\b.{0,30}\\b(poprzednie|wcześniejsze|wczesniejsze|wszystkie|systemowe)\\b.{0,20}\\b(instrukcj\\w*|polece\\w*|reguł\\w*|zasad\\w*)"
+    },
+    {
+      "id": "PI-003",
+      "category": "prompt_injection",
+      "severity": "high",
+      "source": "DAN / jailbreak corpus",
+      "pattern": "(?i)\\b(you are now|act as|pretend to be|jesteś teraz|udawaj)\\b.{0,40}\\b(DAN|developer mode|jailbroken|unrestricted|bez ograniczeń|bez ograniczen)"
+    },
+    {
+      "id": "PI-004",
+      "category": "system_prompt_leak",
+      "severity": "medium",
+      "source": "OWASP LLM07",
+      "pattern": "(?i)\\b(reveal|print|show|repeat|output|ujawnij|pokaż|pokaz|wypisz)\\b.{0,30}\\b(system prompt|hidden instructions|initial instructions|prompt systemowy|instrukcje systemowe)"
+    },
+    {
+      "id": "PI-005",
+      "category": "role_spoofing",
+      "severity": "high",
+      "source": "chat-template injection",
+      "pattern": "<\\|(im_start|im_end|system|endoftext)\\|>|\\[/?INST\\]|<</?SYS>>|^\\s*(system|assistant)\\s*:\\s*(?=.*\\b(ignore|you must|override)\\b)"
+    },
+    {
+      "id": "PI-006",
+      "category": "hidden_text",
+      "severity": "high",
+      "source": "ASCII smuggling (Unicode tags)",
+      "pattern": "[\\U000E0000-\\U000E007F]"
+    },
+    {
+      "id": "PI-007",
+      "category": "hidden_text",
+      "severity": "medium",
+      "source": "zero-width obfuscation",
+      "pattern": "[\\u200B-\\u200F\\u2060\\u2066-\\u2069\\uFEFF]{2,}"
+    },
+    {
+      "id": "EX-001",
+      "category": "exfiltration",
+      "severity": "high",
+      "source": "markdown image exfil (Bing Chat / ChatGPT plugins 2023)",
+      "pattern": "!\\[[^\\]]*\\]\\(https?://[^)\\s]+[?&][^)\\s]*=[^)\\s]{8,}\\)"
+    },
+    {
+      "id": "EX-002",
+      "category": "exfiltration",
+      "severity": "high",
+      "source": "tool-mediated exfil",
+      "pattern": "(?i)\\b(send|post|upload|forward|wyślij|wyslij)\\b.{0,40}\\b(api[_ -]?keys?|secrets?|credentials|passwords?|\\.env|hasł\\w*|klucz\\w*)\\b.{0,40}\\b(to|do|na)\\b.{0,20}(https?://|@)"
+    },
+    {
+      "id": "CE-001",
+      "category": "code_execution",
+      "severity": "high",
+      "source": "curl|sh droppers",
+      "pattern": "(?i)\\b(curl|wget)\\b[^|\\n]{0,200}\\|\\s*(ba|z|da)?sh\\b"
+    },
+    {
+      "id": "CE-002",
+      "category": "code_execution",
+      "severity": "high",
+      "source": "reverse shell",
+      "pattern": "(?i)(/dev/tcp/|\\bnc\\b.{0,20}\\s-e\\s|bash\\s+-i\\s+>&|mkfifo\\s+/tmp/)"
+    },
+    {
+      "id": "DS-001",
+      "category": "unsafe_deserialization",
+      "severity": "high",
+      "source": "pickle RCE (CVE-2024-3568 class, HF model files)",
+      "pattern": "\\b(pickle|cPickle|dill|joblib)\\.loads?\\(|\\b__reduce(_ex)?__\\b|\\bc__builtin__\\b|\\bcposix\\nsystem"
+    },
+    {
+      "id": "DS-002",
+      "category": "unsafe_deserialization",
+      "severity": "high",
+      "source": "torch.load without weights_only (CVE-2025-32434)",
+      "pattern": "\\btorch\\.load\\((?![^)]*weights_only\\s*=\\s*True)[^)]*\\)"
+    },
+    {
+      "id": "DS-003",
+      "category": "unsafe_deserialization",
+      "severity": "medium",
+      "source": "yaml.load RCE",
+      "pattern": "\\byaml\\.(unsafe_)?load\\((?![^)]*SafeLoader)[^)]*\\)"
+    },
+    {
+      "id": "SC-001",
+      "category": "supply_chain",
+      "severity": "high",
+      "source": "trust_remote_code on HF repos",
+      "pattern": "\\btrust_remote_code\\s*=\\s*True\\b"
+    },
+    {
+      "id": "SC-002",
+      "category": "supply_chain",
+      "severity": "medium",
+      "source": "unpinned remote installs",
+      "pattern": "(?i)\\bpip3?\\s+install\\s+(--index-url\\s+https?://(?!pypi\\.org)\\S+|git\\+https?://|https?://\\S+\\.(whl|tar\\.gz))"
+    },
+    {
+      "id": "SC-003",
+      "category": "supply_chain",
+      "severity": "medium",
+      "source": "ShadowRay CVE-2023-48022 (unauthenticated Ray jobs API)",
+      "pattern": "(?i)/api/jobs/?[\"']?\\s*[,)].{0,80}\\bentrypoint\\b"
+    }
+  ]
+}
