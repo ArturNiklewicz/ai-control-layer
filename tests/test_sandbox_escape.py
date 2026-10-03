@@ -59,10 +59,24 @@ def test_guard_state_is_read_only(name):  # agent must not forge consent or pois
     assert e.value.errno == 30  # EROFS
 
 
-def test_audit_is_writable_through_its_own_mount():
-    log = os.environ.get("GUARD_AUDIT_PATH")
-    if log:  # set only by run.sh exec/claude, not selftest
-        Path(log).open("a").close()
+def test_agent_cannot_write_or_truncate_the_audit_log():  # R2: .guard is read-only, no rw mount of the log
+    for flags in ("a", "w", "r+"):
+        with pytest.raises(OSError) as e:
+            (REPO / ".guard" / "audit.jsonl").open(flags)
+        assert e.value.errno in (30, 2, 13)  # EROFS, or absent (the sink creates it on the host)
+    assert not os.environ.get("GUARD_AUDIT_PATH")
+
+
+def test_audit_reaches_the_host_sink_append_only():
+    addr = os.environ.get("GUARD_SINK_PROBE") or os.environ.get("GUARD_AUDIT_SOCKET")
+    assert addr, "run.sh sets it"
+    host, port = addr.rsplit(":", 1)
+    with socket.create_connection((host, int(port)), timeout=3) as s:
+        s.sendall(b'{"event":"sandbox-probe"}\n')
+        assert s.makefile("rb").readline() == b"ok\n"
+    with socket.create_connection((host, int(port)), timeout=3) as s:
+        s.sendall(b"not json\n")  # the sink has no verb for delete or overwrite: anything else is refused
+        assert s.makefile("rb").readline() == b"err\n"
 
 
 def test_repo_itself_is_writable():

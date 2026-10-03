@@ -86,7 +86,7 @@ warstwa 4  guard cli (host)       granica: człowiek + klucz age (zgoda, sejf)
 | E11 | `guard mcp_proxy`                       | proces        | Z2 kontener      | stdio między Claude Code a serwerem MCP                           |
 | E12 | Serwer MCP (np. serena)                 | proces        | Z2 kontener      | wgrany do obrazu; bez dostępu do sieci                            |
 | E13 | `policy.toml` + `signatures.json`       | konfiguracja  | Z2 (ro)          | centralna polityka + feed sygnatur                                |
-| E14 | `audit.jsonl`                           | dane          | Z2 kontener (rw) | decyzje, reguły, liczniki; bez wartości PII                       |
+| E14 | `audit.jsonl` + `audit_sink`            | dane + proces | Z0 host (w kontenerze `:ro`) | decyzje, reguły, liczniki; bez wartości PII; łańcuch sha256 |
 | E15 | Firewall (iptables + ipset)             | mechanizm     | Z2 jądro         | ustawiany przez entrypoint jako root, potem drop                  |
 | E16 | API modelu `api.anthropic.com:443`      | usługa zewn.  | Z3 internet      | jedyny dozwolony host publiczny                                   |
 | E17 | vLLM `qwen3-35b` `100.117.237.101:8006` | usługa        | Z4 tailnet       | NER dla PII + przyszły sędzia LLM                                 |
@@ -113,7 +113,7 @@ warstwa 4  guard cli (host)       granica: człowiek + klucz age (zgoda, sejf)
 | F6  | E9 → E10       | stdin/stdout JSON   | akcja agenta            | allow (brak outputu) / ask / deny; błąd = deny                     |
 | F7  | E9 ↔ E11 ↔ E12 | stdio JSON-RPC      | wywołania i wyniki MCP  | allowlista, ścieżki, PII w argumentach, injection/PII w wynikach   |
 | F8  | E9 → E16       | HTTPS/443           | prompt + kontekst       | firewall I4; treść wcześniej filtrowana przez E10                  |
-| F9  | E10/E11 → E14  | plik (append)       | zdarzenia audytu        | bez wartości PII                                                   |
+| F9  | E10/E11 → E14  | TCP → sink na hoście | zdarzenia audytu       | bez wartości PII; sink dopisuje z łańcuchem hashy, brak usuwania   |
 | F10 | E9 → E7        | syscalls            | zapis plików            | jądro: rw tylko `/repo`; `:ro` dla E8                              |
 | F11 | Z2 → \*        | dowolny             | —                       | **DROP** (domyślnie)                                               |
 | F12 | E1 → E7        | git (host)          | commit / push           | tylko człowiek na hoście; `.git` w kontenerze `:ro`                |
@@ -282,7 +282,7 @@ sequenceDiagram
 | ID  | Ryzyko                                                                      | Prawdopodobieństwo | Mitygacja / dalsze kroki                                                           |
 | --- | --------------------------------------------------------------------------- | ------------------ | ---------------------------------------------------------------------------------- |
 | R1  | Dane przeczytane przez agenta trafiają do API modelu (dozwolony kanał)      | średnie            | tylko `data/clean` w repo; skan PII na odczytach; docelowo model lokalny           |
-| R2  | Audyt zapisywany przez proces o tym samym UID co agent: możliwa manipulacja | średnie            | otwarte: agent może zapisać tylko plik audytu (osobny mount rw, `GUARD_AUDIT_PATH`), nie `.guard/`; pełna naprawa = ADR-0002 (sidecar append-only) |
+| R2  | Audyt: agent mógł skrócić lub sfałszować log (ten sam UID) | częściowo zamknięte | Odporność: log zapisuje wyłącznie `audit_sink` na hoście (poza pudłem); `.guard/` w kontenerze `:ro`, brak zapisywalnego montowania logu; hook wysyła zdarzenia TCP na `host-gateway` (wpis w allowliście firewalla). Dowód: `verify` w `audit.py` (łańcuch sha256 `prev`). **Reszta:** agent może *dopisać* sfałszowane zdarzenia przez sink (brak wspólnego sekretu; zdarzenia hooka i fałszywe są nierozróżnialne); wpisy sprzed łańcucha (bez `prev`) nie są chronione; obcięcie ogona bez zewnętrznej kotwicy (hash głowy) nie jest wykrywalne; sink nasłuchuje na 127.0.0.1 hosta (dostępny dla lokalnych procesów); jeśli sink padnie, hook nie zapisze audytu (sandbox nie startuje bez sinka). Dalej: HMAC per sesja + podpisany hash głowy (ADR-0002) |
 | R3  | Poświadczenia API w wolumenie `claude-home`                                 | niskie             | klucz o wąskim zakresie, rotacja, limity wydatków po stronie dostawcy              |
 | R4  | Kod agenta uruchomiony później na hoście (np. testy)                        | niskie             | testy tylko w kontenerze; review diffu przed merge                                 |
 | R5  | Ucieczka z kontenera (jądro / Docker)                                       | bardzo niskie      | VM Docker Desktop jako druga granica; ścieżka: opcja D (microVM)                   |
@@ -324,3 +324,5 @@ Plus istniejąca suita guarda (259 testów) uruchomiona w kontenerze.
 | kontekst builda = repo | kontekst = katalog tymczasowy (`pyproject.toml`, `uv.lock`, sandbox) | `.env` nigdy nie trafia do builda |
 | — | `/repo/.venv` przykryty tmpfs; venv w `/opt/venv` (obraz) | venv hosta (darwin) nie działa w Linuksie i nie powinien być widoczny |
 | serwery MCP w obrazie | jeszcze nie | dodać per serwer razem z wpisem `mcp_proxy` |
+| Audyt (R2) | log pisany przez `src/guard/audit_sink.py` na hoście; `run.sh` uruchamia go na porcie efemerycznym i dodaje `host-gateway:port` do allowlisty | agent nie ma zapisywalnej ścieżki do logu; sprawdzone empirycznie w Docker Desktop (macOS): TCP do `host-gateway` działa, gniazda unix przez granicę VM nie były potrzebne |
+| Supply chain | Claude Code z tarballa npm `@anthropic-ai/claude-code-linux-<arch>@2.1.288`, weryfikacja `dist.integrity` (sha512) w buildzie; obrazy bazowe przypięte po digeście | wcześniej `curl \| bash` bez wersji i sumy. Sumy pochodzą z rejestru npm (TOFU) |

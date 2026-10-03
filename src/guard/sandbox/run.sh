@@ -42,12 +42,22 @@ case "${1:-}" in
   *)        cmd=(claude "$@") ;;              # domyślnie wszystkie argumenty idą do claude
 esac
 
-# .guard is read-only for the agent (consent, vault); only the audit file is writable (R2: still tamperable)
+# .guard is read-only for the agent (consent, vault, audit). Audit events reach the host-side sink over TCP (R2, ADR-0001 §9).
 # [ -L x ] = x to symlink → odmowa (symlink mógłby przekierować montowanie gdzie indziej) · >&2 = na stderr
 g="$REPO/.guard"; [ -L "$g" ] && { echo "refusing symlinked .guard" >&2; exit 1; }
 mkdir -p "$g"; [ -L "$g/audit.jsonl" ] && { echo "refusing symlinked audit.jsonl" >&2; exit 1; }
-touch "$g/audit.jsonl"                        # plik musi istnieć, inaczej docker zamontuje w jego miejscu katalog
-audit_env=(-e GUARD_AUDIT_PATH=/var/log/guard-audit.jsonl); [ "${1:-}" = selftest ] && audit_env=()  # tests use temp repos
+# selftest pisze do katalogu tymczasowego: testy nie śmiecą w prawdziwym logu. Sink = jedyny pisarz logu, poza pudłem.
+# Docker Desktop: host-gateway = host; połączenia z kontenera trafiają na 127.0.0.1 hosta. Linux: GUARD_SINK_BIND=<docker0 ip>.
+sinkroot="$REPO"; [ "${1:-}" = selftest ] && sinkroot=$(mktemp -d)
+portfile=$(mktemp)
+(cd "$REPO" && exec uv run python -m src.guard.audit_sink --root "$sinkroot" --bind "${GUARD_SINK_BIND:-127.0.0.1}" --port-file "$portfile") &
+sink=$!; trap 'kill "$sink" 2>/dev/null' EXIT
+for _ in $(seq 150); do [ -s "$portfile" ] && break; kill -0 "$sink" 2>/dev/null || break; sleep 0.2; done
+[ -s "$portfile" ] || { echo "audit sink failed to start" >&2; exit 1; }
+gw=$(docker run --rm --entrypoint getent --add-host sink.host:host-gateway "$IMAGE" hosts sink.host | awk '{print $1}')
+[ -n "$gw" ] || { echo "no host-gateway address" >&2; exit 1; }
+sinkaddr="$gw:$(cat "$portfile")"; allow+=("$sinkaddr")
+audit_env=(-e GUARD_AUDIT_SOCKET="$sinkaddr"); [ "${1:-}" = selftest ] && audit_env=(-e GUARD_SINK_PROBE="$sinkaddr")  # tests use temp repos
 
 mask=()   # existing secret-looking files read as empty and stay read-only; absent ones get no stub
 # find -print0 + read -d '' = nazwy rozdzielone bajtem \0 (bezpieczne dla spacji) · ${f#"$REPO"/} = ścieżka względna
@@ -79,11 +89,10 @@ args=(
   -v "$REPO"/.claude:/repo/.claude:ro         #    ustawienia Claude
   -v "$REPO"/src/guard:/repo/src/guard:ro     #    i sam strażnik tylko do odczytu (agent go nie wyłączy)
   -v "$g":/repo/.guard:ro
-  -v "$g/audit.jsonl":/var/log/guard-audit.jsonl   # jedyny zapisywalny plik strażnika: log audytu
   ${audit_env[@]+"${audit_env[@]}"}
   ${mask[@]+"${mask[@]}"}                     # sekrety przykryte pustym /dev/null
   --tmpfs /repo/.venv                         # przykrywa venv hosta (macOS ≠ Linux); właściwy jest w /opt/venv
   -v guard-claude-home:/home/agent/.claude    # nazwany wolumen: login Claude przeżywa restart
 )
-# exec = zastąp ten skrypt dockerem: Ctrl-C, sygnały i kod wyjścia idą prosto
-exec docker run "${args[@]}" "$IMAGE" "${cmd[@]}"
+# bez exec: trap EXIT musi ubić sink; set -e przekazuje kod wyjścia dockera
+docker run "${args[@]}" "$IMAGE" "${cmd[@]}"
