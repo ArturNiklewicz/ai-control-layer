@@ -48,7 +48,7 @@ CASES = [
     ("ścieżka poza repo w argumencie", ("read_file", {"relative_path": "../../../etc/passwd"}), "path-escape", [pytest.mark.negative]),
     ("sekret w argumencie (wyciek do serwera)", ("find_symbol", {"echo": "AKIAIOSFODNN7EXAMPLE"}), "pii-args", [pytest.mark.negative, pytest.mark.pii]),
     ("wynik z ukrytym injection", ("read_file", {"doc": "readme"}), "injection", [pytest.mark.negative, pytest.mark.injection]),
-    ("wynik z PII bez zgody", ("read_file", {"doc": "notatka"}), "no-consent", [pytest.mark.negative, pytest.mark.pii]),
+    ("wynik ze zwykłym PII: przechodzi do proxy", ("read_file", {"doc": "notatka"}), "47030502913", [pytest.mark.positive, pytest.mark.pii]),
 ]  # fmt: skip
 
 
@@ -60,7 +60,7 @@ def test_mcp_call(repo, say, scenario, call, expect):
     out = text(res[1])
     (say.blocked if "[guard:" in out else say.ok)(out[:300])
     assert expect in out
-    assert "47030502913" not in out
+    assert "AKIAIOSFODNN7EXAMPLE" not in out
 
 
 def test_tools_list_is_filtered(repo, say):
@@ -68,15 +68,3 @@ def test_tools_list_is_filtered(repo, say):
     tools = [t["name"] for t in session(repo, [])[0]["tools"]]
     say.ok(f"serwer ma 4 narzędzia, agent widzi: {tools}")
     assert tools == ["find_symbol", "read_file"]
-
-
-@pytest.mark.consent
-@pytest.mark.pii
-@pytest.mark.positive
-def test_pii_output_anonymized_after_login(repo, say, age_key):
-    say.title("MCP: po zalogowaniu i zgodzie wynik z PII jest anonimizowany, nie wstrzymany")
-    assert repo.login("t")[0] == 0
-    say.ok("login + zgoda")
-    out = text(session(repo, [("read_file", {"doc": "notatka"})])[1])
-    say.show("wynik dla agenta", out)
-    assert "[PESEL]" in out and "47030502913" not in out and "t.zielinski@example.com" not in out

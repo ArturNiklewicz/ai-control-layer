@@ -143,7 +143,7 @@ def test_mcp_proxy_input_and_output_controls(repo):
     assert "path-escape" in text(out[4])
     assert "pii-args" in text(out[5])  # secret never reaches the server
     assert "injection" in text(out[6])  # tool output withheld
-    assert "no-consent" in text(out[7]) and "44051401359" not in text(out[7])  # no grant -> withheld
+    assert text(out[7]) == "klient PESEL 44051401359"  # ordinary PII: pseudonymized by the proxy on its way to the model
     events = [e for e in audit_lines(repo) if e.get("event") == "mcp"]
     assert {e["rule"] for e in events if e["verdict"] == "deny"} >= {"mcp-not-allowlisted", "path-escape", "pii-args"}
 

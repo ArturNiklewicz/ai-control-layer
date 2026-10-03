@@ -7,11 +7,10 @@ Input side:  only initialize, ping, tools/list, tools/call and notifications/* p
              checked against mcp.allow (same patterns as the hook), path-like args kept in the
              repo, arguments carrying `block` PII kinds refused.
 Output side: tools/list filtered to allowed tools; every string of every server message (results,
-             errors, notifications) screened for injection signatures and PII; server-initiated
-             requests denied; unmatched responses dropped. PII is anonymized only under a valid
-             consent grant; without one the content is withheld (fail closed).
-ponytail: outputs are anonymized, not pseudonymized — pseudonyms would need a vault write per
-call; add when an agent must de-reference tool output later.
+             errors, notifications) screened for injection signatures and `block` PII kinds
+             (secrets, cards: withheld); server-initiated requests denied; unmatched responses
+             dropped. Other personal data is not this layer's job: the result reaches the model
+             as a tool_result through the anonymizing proxy (gateway.py), which pseudonymizes it.
 """
 
 import argparse
@@ -33,7 +32,6 @@ from src.guard.commands import check_path, decide_tool
 from src.guard.injection import Signature, load_feed, scan, worst
 from src.guard.pii import detect
 from src.guard.policy import Policy, load
-from src.guard.scrub import Blocked, NoConsent, as_anonymize, scrub
 from src.result import Err, Ok
 
 PATH_KEYS = ("path", "relative_path", "file_path", "root", "directory")
@@ -48,7 +46,6 @@ class Ctx:
     root: Path
     policy: Callable[[], Policy | None]  # re-read per call: policy edits apply live
     feed: Callable[[], tuple[Signature, ...]]
-    consented: Callable[[str], bool]
     pending: dict = field(default_factory=dict)  # json.dumps(id) -> "call" | "list" | "other"
 
 
@@ -181,16 +178,11 @@ def screen(value, ctx: Ctx, policy: Policy) -> tuple[object, str | None, dict]:
         if policy.screen_tool_output == "block" and worst(hits) == "high":
             why = why or f"[guard:injection] content withheld: attack signature {', '.join(h.id for h in hits)}"
             continue
-        match scrub(text, detect(text), as_anonymize(policy), {}, ctx.consented):
-            case Ok(r):
-                done[text] = r.text
-                pii.update(r.counts)
-            case Err(Blocked(kinds)):
-                why = why or f"[guard:pii-block] content withheld: contains {', '.join(kinds)}"
-                pii.update(kinds)
-            case Err(NoConsent(_, kinds)):
-                why = why or f"[guard:no-consent] content withheld: contains {', '.join(kinds)}; the user must run `guard login`"
-                pii.update(kinds)
+        if blocked := sorted({sp.kind for sp in detect(text) if policy.action(sp.kind) == "block"}):
+            why = why or f"[guard:pii-block] content withheld: contains {', '.join(blocked)}"
+            pii.update(blocked)
+            continue
+        done[text] = text
     fields = ({"pii": dict(pii)} if pii else {}) | ({"signatures": sigs} if sigs else {})
     return (None if why else map_strings(value, lambda t: done[t])), why, fields  # fmt: skip
 
@@ -272,14 +264,7 @@ def main() -> int:
         r = load_feed(root / p.feed_path) if p else None
         return r.value if isinstance(r, Ok) else ()
 
-    from src.guard.cli import current_grant
-    from src.guard.consent import allows
-
-    grant = (
-        current_grant()
-    )  # ponytail: read once per proxy session; restart after login
-    ctx = Ctx(a.server, os.environ.get("GUARD_AGENT", "default"), root, policy, feed,
-              lambda act: allows(grant, act, datetime.now(UTC)))  # fmt: skip
+    ctx = Ctx(a.server, os.environ.get("GUARD_AGENT", "default"), root, policy, feed)
     child = subprocess.Popen(
         cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1
     )
