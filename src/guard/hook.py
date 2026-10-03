@@ -6,7 +6,9 @@ Any internal failure denies (fail closed): a crashing hook must not open the gat
 """
 
 import json
+import glob
 import os
+import signal
 import sys
 import time
 from collections import Counter
@@ -16,15 +18,43 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from src.guard import audit
-from src.guard.commands import Decision, decide_tool, deny, tokenize
+from src.guard.commands import Decision, decide_tool, deny, segments, tokenize
 from src.guard.injection import load_feed, scan, worst
 from src.guard.pii import detect
 from src.guard.policy import Policy, Screen, load
 from src.result import Err, Ok
 
-MAX_SCAN = (
-    2_000_000  # bytes; bigger files are not content-scanned (path rules still apply)
-)
+MAX_SCAN = 2_000_000  # bytes; only the head of a bigger file is scanned, and the read is denied
+EVENTS = ("PreToolUse", "UserPromptSubmit")
+FILE_TOOLS = {"Read": "file_path", "NotebookRead": "notebook_path"}
+BUDGET_S = 10  # in-process time budget: a slow scan must deny, not hit the host's non-blocking timeout
+
+
+def denial(event: object, rule: str, reason: str) -> dict:
+    msg = f"[guard:{rule}] {reason}"
+    if event == "UserPromptSubmit":
+        return {"decision": "block", "reason": msg}
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+            "permissionDecisionReason": msg}}  # fmt: skip
+
+
+def malformed(tool: object, tool_input: object) -> str | None:
+    if not isinstance(tool, str) or not tool:
+        return "tool_name missing or not a string"
+    if not isinstance(tool_input, Mapping):
+        return "tool_input is not an object"
+    if tool == "Bash" and not isinstance(tool_input.get("command"), str):
+        return "Bash command missing or not a string"
+    if (f := FILE_TOOLS.get(tool)) and not (
+        isinstance(v := tool_input.get(f), str) and v
+    ):
+        return f"{f} missing or not a string"
+    if any(
+        k in tool_input and not isinstance(tool_input[k], str)
+        for k in ("file_path", "notebook_path", "path")
+    ):
+        return "path field is not a string"
+    return None
 
 
 def summary(counts: Mapping[str, int]) -> str:
@@ -51,11 +81,28 @@ def screen(
 
 
 def read_targets(tool: str, tool_input: Mapping, cwd: Path) -> list[Path]:
-    if tool == "Read":
-        return [cwd / str(tool_input.get("file_path", ""))]
+    if tool in FILE_TOOLS:
+        return [cwd / str(tool_input.get(FILE_TOOLS[tool], ""))]
+    if tool == "Grep" and tool_input.get("output_mode", "files_with_matches") not in (
+        "files_with_matches",
+        "count",
+    ):
+        return [cwd / str(tool_input.get("path") or ".")]
     if tool == "Bash":
-        toks = tokenize(str(tool_input.get("command", ""))) or []
-        return [p for t in toks if (p := cwd / t).is_file()]
+        out, cur = [], cwd
+        for seg in segments(tokenize(str(tool_input.get("command", ""))) or []):
+            for t in seg:
+                p = cur / os.path.expanduser(t)
+                out += [
+                    q
+                    for m in (glob.glob(str(p)) if glob.has_magic(t) else [p])
+                    if (q := Path(m)).is_file()
+                ]
+            if (
+                seg[0] == "cd" and len(seg) > 1
+            ):  # later segments run in the new directory
+                cur = Path(os.path.realpath(cur / os.path.expanduser(seg[1])))
+        return out
     return []
 
 
@@ -65,12 +112,27 @@ def content_checks(
     """Input side: what the agent is about to read (PII, injection) or write (blocked kinds)."""
     info: dict = {}
     for path in read_targets(tool, tool_input, cwd):
+        if tool == "Grep" and path.is_dir():
+            if policy.scan_reads:
+                return deny(
+                    "pii-unscannable",
+                    "Grep content over a directory cannot be scanned; grep a single file",
+                ), info
+            continue
+        if not path.is_file():
+            continue
         try:
-            if path.stat().st_size > MAX_SCAN:
-                continue
-            text = path.read_text()
-        except (OSError, UnicodeDecodeError):
-            continue  # binary / unreadable: path rules already applied
+            with path.open("rb") as f:
+                big = os.fstat(f.fileno()).st_size > MAX_SCAN
+                text = f.read(MAX_SCAN).decode(
+                    errors="replace"
+                )  # the host decodes with replacement too
+        except OSError:
+            if policy.scan_reads:
+                return deny(
+                    "pii-unscannable", f"{path.name} could not be read for scanning"
+                ), info
+            continue
         if policy.scan_reads and (counts := pii_counts(text, policy)):
             info["pii"] = counts
             return deny(
@@ -83,8 +145,18 @@ def content_checks(
             info["signatures"] = ids
         if d:
             return d, info
+        if big and policy.scan_reads:
+            return deny(
+                "pii-unscannable",
+                f"{path.name} is larger than {MAX_SCAN} bytes; only its head could be scanned",
+            ), info
+    edits = tool_input.get("edits")
     written = " ".join(
-        str(tool_input.get(k, "")) for k in ("content", "new_string", "new_source")
+        str(v)
+        for src in [tool_input, *(edits if isinstance(edits, list) else [])]
+        if isinstance(src, Mapping)
+        for k in ("content", "new_string", "new_source")
+        if (v := src.get(k)) is not None
     )
     if blocked := sorted(
         {s.kind for s in detect(written) if policy.action(s.kind) == "block"}
@@ -123,6 +195,9 @@ def evaluate(
 ) -> tuple[dict | None, dict]:
     """Pure-ish core (reads files it inspects). Returns (stdout JSON or None, audit fields)."""
     event = payload.get("hook_event_name", "PreToolUse")
+    if event not in EVENTS:
+        return denial("PreToolUse", "malformed", f"unknown hook_event_name {str(event)[:40]!r}"), {
+            "event": str(event), "verdict": "deny", "rule": "malformed"}  # fmt: skip
     agent_name = str(payload.get("agent_type") or env.get("GUARD_AGENT") or "default")
     agent = policy.agents.get(agent_name)
     cwd = Path(os.path.realpath(payload.get("cwd") or root))
@@ -130,17 +205,27 @@ def evaluate(
     base = {"event": event, "agent": agent_name}
 
     if event == "UserPromptSubmit":
-        out, info = evaluate_prompt(str(payload.get("prompt", "")), policy, feed, base)
+        prompt = payload.get("prompt")
+        if isinstance(prompt, str):
+            out, info = evaluate_prompt(prompt, policy, feed, base)
+        else:
+            out = denial(event, "malformed", "prompt missing or not a string")
+            info = base | {
+                "channel": "user_prompt",
+                "verdict": "deny",
+                "rule": "malformed",
+            }
         if out and policy.mode == "monitor":
             return None, info | {"verdict": "allow", "would": "deny"}
         return out, info
 
-    tool, tool_input = (
-        str(payload.get("tool_name", "")),
-        payload.get("tool_input") or {},
-    )
+    raw_tool, raw_input = payload.get("tool_name"), payload.get("tool_input")
+    tool = raw_tool if isinstance(raw_tool, str) else ""
+    tool_input = raw_input if isinstance(raw_input, Mapping) else {}
     info = dict(base, tool=tool)
-    if agent is None:
+    if reason := malformed(raw_tool, raw_input):
+        d = deny("malformed", reason)
+    elif agent is None:
         d = deny("unknown-agent", f"identity {agent_name!r} has no [agents] entry")
     elif isinstance(feed, Err):
         d = deny("feed-invalid", feed.error.detail)
@@ -171,41 +256,65 @@ def self_protected(policy: Policy, policy_path: Path, root: Path) -> Policy:
     return replace(policy, deny_paths=policy.deny_paths + tuple(rel))
 
 
+def finish(root: Path, out: dict | None, info: dict) -> None:
+    for attempt in (
+        info,
+        {
+            k: v.encode("utf-8", "replace").decode() if isinstance(v, str) else v
+            for k, v in info.items()
+        },
+    ):
+        try:
+            audit.record(root, attempt, datetime.now(UTC))
+            break
+        except (OSError, ValueError):
+            pass  # audit failure must not flip a deny into a crash (= allow); retry once with lone surrogates replaced
+    if out:
+        print(
+            json.dumps(out), flush=True
+        )  # ASCII-escaped: a lone surrogate cannot break stdout
+
+
 def main() -> int:
     started = time.perf_counter()
     env = os.environ
     root = Path(os.path.realpath(env.get("CLAUDE_PROJECT_DIR") or os.getcwd()))
+    seen: dict = {}
+
+    def expired(*_: object) -> None:
+        finish(root, denial(seen.get("event"), "timeout", "scan exceeded the time budget"),
+               {"event": seen.get("event"), "verdict": "deny", "rule": "timeout"})  # fmt: skip
+        os._exit(0)
+
+    signal.signal(
+        signal.SIGALRM, expired
+    )  # ponytail: POSIX only; ceiling = Windows needs a watchdog process
+    signal.alarm(int(env.get("GUARD_HOOK_BUDGET_S") or BUDGET_S))
     try:
         payload = json.load(sys.stdin)
+        seen["event"] = payload.get("hook_event_name")
         policy_path = Path(env.get("GUARD_POLICY") or root / "src/guard/policy.toml")
         match load(policy_path):
             case Ok(policy):
                 policy = self_protected(policy, policy_path, root)
                 out, info = evaluate(payload, policy, root, env)
             case Err(e):
-                out = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                       "permissionDecisionReason": f"[guard:policy-invalid] {e.detail}"}}  # fmt: skip
-                if payload.get("hook_event_name") == "UserPromptSubmit":
-                    out = {
-                        "decision": "block",
-                        "reason": f"[guard:policy-invalid] {e.detail}",
-                    }
+                out = denial(payload.get("hook_event_name"), "policy-invalid", e.detail)
                 info = {
                     "event": payload.get("hook_event_name"),
                     "verdict": "deny",
                     "rule": "policy-invalid",
                 }
     except Exception as e:  # noqa: BLE001 — the one place a bug must turn into "deny"
-        out = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-               "permissionDecisionReason": f"[guard:internal-error] {type(e).__name__}"}}  # fmt: skip
-        info: dict = {"verdict": "deny", "rule": "internal-error", "error": type(e).__name__}
+        out = denial(seen.get("event"), "internal-error", type(e).__name__)
+        info: dict = {
+            "verdict": "deny",
+            "rule": "internal-error",
+            "error": type(e).__name__,
+        }
+    signal.alarm(0)
     info["latency_ms"] = round((time.perf_counter() - started) * 1000, 2)
-    try:
-        audit.record(root, info, datetime.now(UTC))
-    except OSError:
-        pass  # audit failure must not flip a deny into a crash (= allow)
-    if out:
-        print(json.dumps(out, ensure_ascii=False))
+    finish(root, out, info)
     return 0
 
 

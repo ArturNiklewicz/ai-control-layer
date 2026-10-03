@@ -37,11 +37,12 @@ def weighted(ds: str, weights: Iterable[int]) -> int:
 
 def pesel_ok(s: str) -> bool:
     d = digits(s)
+    if len(d) != 11:
+        return False
     month = int(d[2:4]) % 20  # +20/+40/+60/+80 encodes the century
     check = (10 - weighted(d, (1, 3, 7, 9, 1, 3, 7, 9, 1, 3)) % 10) % 10
     return (
-        len(d) == 11
-        and 1 <= month <= 12
+        1 <= month <= 12
         and 1 <= int(d[4:6]) <= 31
         and check == int(d[10])
     )
@@ -85,7 +86,7 @@ def always(_: str) -> bool:
 DETECTORS: dict[str, tuple[re.Pattern, Callable[[str], bool], Callable[[str], str]]] = {
     "SECRET": (
         re.compile(
-            r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]+?-----END [A-Z ]*PRIVATE KEY-----"
+            r"-----BEGIN [A-Z ]{0,30}PRIVATE KEY-----(?:(?!-----BEGIN)[\s\S]){1,10000}?-----END [A-Z ]{0,30}PRIVATE KEY-----"
             r"|\bAKIA[0-9A-Z]{16}\b|\bsk-[A-Za-z0-9_-]{20,}|\bgh[pousr]_[A-Za-z0-9]{36,}"
             r"|\beyJ[\w-]{8,}\.eyJ[\w-]{8,}\.[\w-]{8,}"
             # key=value: group 1 = the value only, so the key name stays readable

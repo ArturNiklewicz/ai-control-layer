@@ -8,6 +8,12 @@ from src.guard.pii import (
     SemanticError,
     anonymize,
     detect,
+    iban_ok,
+    id_card_ok,
+    luhn_ok,
+    nip_ok,
+    pesel_ok,
+    regon_ok,
     pseudonymize,
     restore,
     semantic_spans,
@@ -126,3 +132,10 @@ def test_semantic_recovers_misquoted_inflection():
     r = semantic_spans(doc, complete)
     assert isinstance(r, Ok)
     assert pseudonymize(doc, r.value, {})[0] == "Pilotaż prowadziła wraz z wolontariuszem [OSOBA_1]."
+
+
+@pytest.mark.parametrize("check", [pesel_ok, nip_ok, regon_ok, iban_ok, luhn_ok, id_card_ok])
+@pytest.mark.parametrize("s", ["", "1", "123", "PL"])
+def test_validators_reject_short_input_without_crashing(check, s):
+    # regression: pesel_ok indexed digits before checking the length
+    assert check(s) is False
