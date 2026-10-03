@@ -88,10 +88,14 @@ class Vault:
         return v
 
 
-def restore(text: str, vault: Vault, escape: Callable[[str], str] = str) -> str:
-    return TOKEN.sub(
-        lambda m: escape(vault.tokens[m[1]]) if m[1] in vault.tokens else m[0], text
-    )
+def restore_tokens(
+    text: str, vault: Vault, escape: Callable[[str], str] = str, only: frozenset[str] | None = None
+) -> str:
+    def back(m: re.Match) -> str:
+        ok = m[1] in vault.tokens and (only is None or m[1] in only)
+        return escape(vault.tokens[m[1]]) if ok else m[0]
+
+    return TOKEN.sub(back, text)
 
 
 def json_escape(s: str) -> str:
@@ -171,7 +175,7 @@ class Anonymizer:
     # --- transform ---
 
     def mask(
-        self, text: str, spans: list[Span], policy: Policy, counts: Counter
+        self, text: str, spans: list[Span], policy: Policy, counts: Counter, minted: set[str]
     ) -> str:
         out, last = [], 0
         for s in non_overlapping(spans, SEMANTIC_PRIORITY):
@@ -190,32 +194,38 @@ class Anonymizer:
                 if action == "pseudonymize"
                 else lab
             )
+            minted.add(tok)
             out += [text[last : s.start], f"[{tok}]"]
             last = s.end
         return "".join(out) + text[last:]
 
     def pseudonymize_many(
         self, texts: Iterable[str], policy: Policy
-    ) -> Result[tuple[dict[str, str], Counter], str]:
-        """text -> outgoing text. A text we produced by restoring is sent back exactly as the
-        model first saw it (memo): Anthropic validates thinking signatures over that history."""
+    ) -> Result[tuple[dict[str, str], Counter, frozenset[str]], str]:
+        """text -> outgoing text, kind counts, and the tokens this call put on the wire.
+        A text we produced by restoring is sent back exactly as the model first saw it (memo):
+        Anthropic validates thinking signatures over that history. Restore a reply only with
+        the returned tokens: a caller who types "[OSOBA_1]" must not get someone's name back."""
         texts = list(dict.fromkeys(texts))  # order kept: token numbers follow reading order
         with self.lock:
             out = {t: self.memo[t] for t in texts if t in self.memo}
         counts: Counter = Counter()
+        minted = {m[1] for t in out.values() for m in TOKEN.finditer(t)}  # memo values are ours
         match self.detect_many([t for t in texts if t not in out]):
             case Err(e):
                 return Err(e)
             case Ok(spans):
                 with self.lock:
                     out |= {
-                        t: self.mask(t, sp, policy, counts) for t, sp in spans.items()
+                        t: self.mask(t, sp, policy, counts, minted) for t, sp in spans.items()
                     }
-        return Ok((out, counts))
+        return Ok((out, counts, frozenset(minted)))
 
-    def restore(self, text: str, escape: Callable[[str], str] = str) -> str:
+    def restore(self, text: str, escape: Callable[[str], str] = str, only: frozenset[str] | None = None) -> str:
+        """only=None: every token (the host user restoring a file); the proxy passes the
+        request's own tokens."""
         with self.lock:
-            return restore(text, self.vault, escape)
+            return restore_tokens(text, self.vault, escape, only)
 
     def remember(self, restored: str, sent: str) -> None:
         if restored != sent:

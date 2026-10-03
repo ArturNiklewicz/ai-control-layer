@@ -153,7 +153,7 @@ def cmd_transform(policy: Policy, args) -> int:
         text = f.read_text(errors="replace")
         event = {"event": mode, "file": hashlib.sha256(os.path.relpath(f, ROOT).encode()).hexdigest()[:12]}
         match eng.pseudonymize_many([text], pol):
-            case Ok((done, counts)):
+            case Ok((done, counts, _)):
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_text(done[text])
                 audit.record(ROOT, event | {"verdict": "allow", "pii": dict(counts)}, now())

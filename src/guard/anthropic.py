@@ -11,9 +11,9 @@ from typing import Any
 
 from src.guard.anonymizer import holdback
 
+# identifiers only: anything that can hold free text (metadata, urls, citations) is screened
 SKIP_KEYS = frozenset({
-    "type", "id", "tool_use_id", "name", "model", "signature", "media_type", "cache_control",
-    "metadata", "stop_reason", "stop_sequence", "role", "citations", "url",
+    "type", "id", "tool_use_id", "name", "model", "signature", "media_type", "cache_control", "role", "stop_reason",
 })  # fmt: skip
 OPAQUE_BLOCKS = frozenset({"thinking", "redacted_thinking", "image"})
 # the harness's own tool definitions: static, no user data, and rewriting them changes behaviour.

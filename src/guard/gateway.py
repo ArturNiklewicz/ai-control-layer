@@ -477,6 +477,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.refuse(Refusal(503, "policy-invalid", e.detail), event)
             case Ok(policy):
                 pass
+        if self.client_address[0] not in ("127.0.0.1", "::1"):
+            # ponytail: one host, one user. Multi-user needs a vault per credential
+            return self.refuse(Refusal(403, "remote-client", "the anonymizing proxy serves loopback only"), event)
         gw, model = policy.gateway, str(body.get("model", ""))
         cred = self.headers.get("x-api-key") or self.headers.get("Authorization") or ""
         event |= {"api": "anthropic", "model": model, "principal": "anthropic:" + hashlib.sha256(cred.encode()).hexdigest()[:8]}
@@ -486,8 +489,10 @@ class Handler(BaseHTTPRequestHandler):
         match eng.pseudonymize_many(anthropic.strings(body), policy):
             case Err(e):
                 return self.refuse(Refusal(503, "pii-detector", e), event)
-            case Ok((sent, counts)):
+            case Ok((sent, counts, minted)):
                 pass
+        back = lambda t: eng.restore(t, only=minted)  # noqa: E731
+        back_json = lambda t: eng.restore(t, json_escape, minted)  # noqa: E731
         out = anthropic.walk(body, lambda t: sent[t])
         if hits := sorted({h.id for t in sent.values() for h in self.feed_hits(policy, t)}):
             event["signatures"] = hits  # ponytail: audit only; a block would kill the session (history is resent)
@@ -509,12 +514,12 @@ class Handler(BaseHTTPRequestHandler):
             if path.endswith("count_tokens") or not body.get("stream"):
                 reply = json.loads(resp.read())
                 if not path.endswith("count_tokens"):
-                    reply = anthropic.restore_reply(reply, eng.restore, eng.remember)
+                    reply = anthropic.restore_reply(reply, back, eng.remember)
                 u = reply.get("usage") or {}
                 done((int(u.get("input_tokens") or reply.get("input_tokens") or 0), int(u.get("output_tokens") or 0)))
                 self.relay(resp.status, resp.headers, json.dumps(reply, ensure_ascii=False).encode())
             else:
-                self.relay_stream(resp, eng, done)
+                self.relay_stream(resp, back, back_json, eng.remember, done)
 
     def feed_hits(self, policy: Policy, text: str):
         match load_feed(ROOT / policy.feed_path):
@@ -531,7 +536,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def relay_stream(self, resp, eng: Anonymizer, done: Callable[[tuple[int, int]], object]) -> None:
+    def relay_stream(self, resp, back, back_json, remember, done: Callable[[tuple[int, int]], object]) -> None:
         self.send_response(resp.status)
         for k, v in resp.headers.items():
             if k.lower() not in HOP | {"content-encoding"}:
@@ -539,7 +544,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
         self.close_connection = True
-        sr = anthropic.StreamRestorer(eng.restore, lambda t: eng.restore(t, json_escape), eng.remember)
+        sr = anthropic.StreamRestorer(back, back_json, remember)
         name, data = "", []
         for raw in resp:
             line = raw.decode("utf-8").rstrip("\r\n")

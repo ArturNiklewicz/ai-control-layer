@@ -64,7 +64,7 @@ def test_names_without_rules_are_pseudonymized_per_person_and_spelling(tmp_path)
         "Spotkałem Jana Kowalskiego i Kasią",
         "PESEL 44051401359",
     ]
-    out, counts = eng.pseudonymize_many(texts, POLICY).value  # type: ignore[union-attr]
+    out, counts, _ = eng.pseudonymize_many(texts, POLICY).value  # type: ignore[union-attr]
     assert out[texts[0]] == "[OSOBA_1] mieszka na [ADRES_1]"
     assert (
         out[texts[1]] == "Spotkałem [OSOBA_1.2] i [OSOBA_2]"
@@ -348,3 +348,18 @@ def test_model_not_allowed_and_count_tokens(proxy):
         "/v1/messages/count_tokens",
     )
     assert "Kowalsk" not in json.dumps(FakeAnthropic.seen[-1][1], ensure_ascii=False)
+
+
+def test_reply_restores_only_this_requests_tokens(proxy):
+    # regression: the vault is shared, so a caller who typed "[OSOBA_1]" got someone's name back
+    url, _ = proxy
+    post(url, {"model": "claude-x", "max_tokens": 50, "messages": [{"role": "user", "content": PROMPT}]})
+    status, data = post(url, {"model": "claude-x", "max_tokens": 50, "messages": [{"role": "user", "content": "kim jest [OSOBA_1]?"}]})
+    assert status == 200 and "Kowalsk" not in data.decode()
+
+
+def test_metadata_and_urls_are_screened():
+    # regression: metadata, url and citations were skipped as if they were identifiers
+    body = {"metadata": {"user_id": "u"}, "messages": [{"role": "user", "content": [
+        {"type": "document", "source": {"type": "url", "url": "https://x/u"}, "citations": {"enabled": True}}]}]}  # fmt: skip
+    assert sorted(strings(body)) == ["https://x/u", "u"]
