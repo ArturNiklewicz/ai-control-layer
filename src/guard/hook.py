@@ -61,8 +61,12 @@ def summary(counts: Mapping[str, int]) -> str:
     return ", ".join(f"{k}×{n}" for k, n in sorted(counts.items()))
 
 
-def pii_counts(text: str, policy: Policy) -> dict[str, int]:
-    return dict(Counter(s.kind for s in detect(text) if policy.action(s.kind) != "off"))
+def pii_counts(text: str, policy: Policy) -> tuple[dict[str, int], list[str]]:
+    """-> (every detected kind, for the audit; kinds whose action is `block`, which deny).
+    Other personal data is not denied here: the anonymizing proxy pseudonymizes it on the way
+    out, so blocking it would only stop work that can leave safely."""
+    counts = Counter(s.kind for s in detect(text) if policy.action(s.kind) != "off")
+    return dict(counts), sorted(k for k in counts if policy.action(k) == "block")
 
 
 def screen(
@@ -115,8 +119,8 @@ def content_checks(
         if tool == "Grep" and path.is_dir():
             if policy.scan_reads:
                 return deny(
-                    "pii-unscannable",
-                    "Grep content over a directory cannot be scanned; grep a single file",
+                    "unscannable",
+                    "Grep content over a directory cannot be scanned for secrets; grep a single file",
                 ), info
             continue
         if not path.is_file():
@@ -124,21 +128,18 @@ def content_checks(
         try:
             with path.open("rb") as f:
                 big = os.fstat(f.fileno()).st_size > MAX_SCAN
-                text = f.read(MAX_SCAN).decode(
-                    errors="replace"
-                )  # the host decodes with replacement too
+                text = f.read(MAX_SCAN).decode(errors="replace")  # the host decodes with replacement too
         except OSError:
             if policy.scan_reads:
-                return deny(
-                    "pii-unscannable", f"{path.name} could not be read for scanning"
-                ), info
+                return deny("unscannable", f"{path.name} could not be read for scanning"), info
             continue
-        if policy.scan_reads and (counts := pii_counts(text, policy)):
-            info["pii"] = counts
+        counts, blocked = pii_counts(text, policy) if policy.scan_reads else ({}, [])
+        info |= {"pii": counts} if counts else {}
+        if blocked:
             return deny(
-                "pii-read",
-                f"{path.name} contains personal data ({summary(counts)}). Do not try to work around "
-                "this. Ask the user for an anonymized copy (only a human can authorize it).",
+                "secret-read",
+                f"{path.name} contains {', '.join(blocked)}. Secrets never reach the model; "
+                "ask the user to move them out of the file.",
             ), info
         d, ids = screen(text, policy.screen_reads, feed, path.name)
         if ids:
@@ -147,7 +148,7 @@ def content_checks(
             return d, info
         if big and policy.scan_reads:
             return deny(
-                "pii-unscannable",
+                "unscannable",
                 f"{path.name} is larger than {MAX_SCAN} bytes; only its head could be scanned",
             ), info
     edits = tool_input.get("edits")
@@ -173,13 +174,11 @@ def evaluate_prompt(
 ) -> tuple[dict | None, dict]:
     """Input side for the human's prompt. It cannot be rewritten here, only stopped."""
     info = dict(base, channel="user_prompt")
-    if counts := pii_counts(prompt, policy):
-        info |= {"verdict": "deny", "rule": "pii-prompt", "pii": counts}
-        reason = (
-            f"Prompt contains personal data ({summary(counts)}). Nothing was sent. "
-            "Pseudonymize it first: `uv run python -m src.guard.cli login`, "
-            "then `... pseudonymize`."
-        )
+    counts, blocked = pii_counts(prompt, policy)
+    info |= {"pii": counts} if counts else {}
+    if blocked:
+        info |= {"verdict": "deny", "rule": "secret-prompt"}
+        reason = f"Prompt contains {', '.join(blocked)}. Nothing was sent: secrets never leave this machine."
         return {"decision": "block", "reason": reason}, info
     if isinstance(feed, Ok):
         d, ids = screen(prompt, policy.screen_prompt, feed.value, "prompt")

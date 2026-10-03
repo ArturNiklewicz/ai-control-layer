@@ -8,7 +8,7 @@ import pytest
 from src.guard.pii import detect
 from tests.test_guard_e2e import hook, repo, verdict  # noqa: F401
 
-PII = "Klient PESEL 44051401359\n"
+PII = "aws_key AKIA" + "IOSFODNN7EXAMPLE\n"  # a `block` kind: reads of it deny
 KEY = "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----"
 
 
@@ -58,7 +58,7 @@ def test_oversize_and_undecodable_reads_denied(repo):
             "tool_name": "Grep",
             "tool_input": {
                 "pattern": ".",
-                "path": "notes.txt",
+                "path": "keys.txt",
                 "output_mode": "content",
             },
         },
@@ -67,9 +67,9 @@ def test_oversize_and_undecodable_reads_denied(repo):
             "tool_name": "Grep",
             "tool_input": {"pattern": ".", "path": ".", "output_mode": "content"},
         },
-        {"tool_name": "NotebookRead", "tool_input": {"notebook_path": "notes.txt"}},
-        {"tool_name": "Bash", "tool_input": {"command": "cat *.txt"}},
-        {"tool_name": "Bash", "tool_input": {"command": "cd src && cat ../notes.txt"}},
+        {"tool_name": "NotebookRead", "tool_input": {"notebook_path": "keys.txt"}},
+        {"tool_name": "Bash", "tool_input": {"command": "cat k*.txt"}},
+        {"tool_name": "Bash", "tool_input": {"command": "cd src && cat ../keys.txt"}},
     ],
 )
 def test_other_read_paths_scanned(repo, call):
