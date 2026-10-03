@@ -11,8 +11,8 @@ SHARED = {"result", "llm"}
 APP_OF = {"guard": "guard"}  # top-level name -> app
 PURE = {
     "result.py",
-    "guard/pii.py", "guard/commands.py", "guard/policy.py", "guard/scrub.py",
-    "guard/consent.py", "guard/injection.py", "guard/report.py",
+    "guard/pii.py", "guard/commands.py", "guard/policy.py", "guard/anthropic.py",
+    "guard/injection.py", "guard/report.py",
 }  # fmt: skip  # stdlib only: importable/testable with nothing installed
 
 

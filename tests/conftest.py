@@ -26,7 +26,6 @@ MARKERS = {
     "negative": "attack or violation that must be blocked / redacted",
     # control area
     "pii": "personal data detection, anonymization, pseudonymization",
-    "consent": "authentication + consent before anonymization",
     "vault": "sops/age sealed vault",
     "hook": "Claude Code hook (PreToolUse / UserPromptSubmit)",
     "mcp": "MCP proxy",

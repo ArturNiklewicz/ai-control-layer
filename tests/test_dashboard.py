@@ -14,7 +14,7 @@ EVENTS = [
     {"ts": "2026-10-03T18:01:00+00:00", "event": "UserPromptSubmit", "agent": "default", "verdict": "allow", "rule": "ok", "latency_ms": 10.0},
     {"ts": "2026-10-03T18:02:00+00:00", "event": "gateway", "principal": "demo", "model": "m", "upstream": "private", "verdict": "allow", "rule": "ok", "tokens": 18, "cost_usd": 0.5, "guard_ms": 8.0, "latency_ms": 300.0, "judge_score": 0.95},
     {"ts": "2026-10-03T18:03:00+00:00", "event": "gateway", "principal": "demo", "model": "x", "verdict": "deny", "rule": "model-denied", "signatures": ["inj-1"]},
-    {"ts": "2026-10-03T18:04:00+00:00", "event": "consent", "user": "a", "verdict": "granted"},
+    {"ts": "2026-10-03T18:04:00+00:00", "event": "gateway", "api": "anthropic", "verdict": "allow", "rule": "ok", "pii": {"PERSON": 2}},
 ]  # fmt: skip
 
 
@@ -27,12 +27,12 @@ def data_of(html: str) -> dict:
 def test_counts_round_trip():
     d = data_of(render_html(EVENTS, NOW))
     assert d["kpi"]["events"] == 5
-    assert d["kpi"]["decisions"] == 4
+    assert d["kpi"]["decisions"] == 5  # the proxied request is a decision too
     assert d["kpi"]["denies"] == 2
-    assert d["kpi"]["block_rate"] == 0.5
+    assert d["kpi"]["block_rate"] == 0.4
     assert d["kpi"]["spend_total"] == d["kpi"]["spend_today"] == 0.5
     assert d["kpi"]["tokens"] == 18
-    assert d["posture"]["consent"] == {"granted": 1}
+    assert d["posture"]["proxied"] == 1
     assert d["signatures"] == [["inj-1", 1]]
     assert len(d["rows"]) == 5
 

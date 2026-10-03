@@ -2,13 +2,10 @@
 
 import json
 import os
-import pty
-import select
 import shutil
 import socket
 import subprocess
 import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -75,12 +72,6 @@ def docker_env():
     return env
 
 
-@pytest.fixture(scope="session")
-def age_key():
-    if not shutil.which("sops") or not (Path.home() / ".config/sops/age/keys.txt").exists():
-        pytest.skip("sops or age key absent")
-
-
 # --- a throwaway project guarded by the real policy ---
 
 
@@ -116,31 +107,6 @@ class Repo:
         assert p.returncode == 0, p.stderr
         return json.loads(p.stdout) if p.stdout.strip() else None
 
-    def login(self, answer: str = "t") -> tuple[int, str]:
-        """Drive `guard login` through a real pseudo-terminal, like a human at a keyboard."""
-        master, slave = pty.openpty()
-        p = subprocess.Popen([PY, "-m", "src.guard.cli", "login"], stdin=slave, stdout=slave, stderr=slave,
-                             cwd=ROOT, env=self.env, close_fds=True)  # fmt: skip
-        os.close(slave)
-        out, answered, deadline = b"", False, time.time() + 60
-        while time.time() < deadline:
-            if not answered and b"[t/N]" in out:
-                os.write(master, f"{answer}\n".encode())
-                answered = True
-            r, _, _ = select.select([master], [], [], 0.5)
-            if r:
-                try:
-                    chunk = os.read(master, 4096)
-                except OSError:  # EIO: child closed the terminal
-                    break
-                if not chunk:
-                    break
-                out += chunk
-            elif p.poll() is not None:
-                break
-        p.wait(timeout=30)
-        os.close(master)
-        return p.returncode, out.decode(errors="replace").replace("\r", "")
 
 
 def make_repo(tmp: Path, semantic: bool) -> Repo:

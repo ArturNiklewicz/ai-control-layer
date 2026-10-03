@@ -11,9 +11,10 @@ harness = ["claude-agent-sdk>=0.2", "openai-agents>=0.23", "langchain>=1.4"]  # 
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+norecursedirs = ["attic", ".venv", "tests/integration/corpus"]
 
 [tool.pyright]
 venvPath = "."
 venv = ".venv"
 typeCheckingMode = "standard"
-exclude = ["tests/integration/corpus", ".venv"]
+exclude = ["tests/integration/corpus", ".venv", "attic"]

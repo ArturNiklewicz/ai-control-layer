@@ -42,8 +42,8 @@ def render(events: list[dict], now: datetime, window: timedelta = timedelta(days
         lines.append("")
     lines.append("agents (verdict)")
     lines += [f"  {a:<12} {v:<6} {n:>5}" for (a, v), n in sorted(agents.items())] or ["  -"]
-    consent = [e for e in recent if e.get("event") == "consent"]
-    lines += ["", "consent"] + ([f"  {e['ts'][:19]}  {e.get('user')}  {e['verdict']}" for e in consent[-5:]] or ["  -"])
+    out = Counter(k for e in recent if e.get("api") == "anthropic" for k, n in (e.get("pii") or {}).items() for _ in range(n))
+    lines += ["", "pseudonymized before leaving (Anthropic proxy)"] + ([f"  {k:<22} {n:>5}" for k, n in out.most_common()] or ["  -"])
     return "\n".join(lines)
 
 
@@ -110,7 +110,7 @@ def stats(events: list[dict], now: datetime) -> dict:
         "posture": {
             "mode": "monitor" if any("would" in e for e in dec) else "enforce",
             "monitor_seen": any("would" in e for e in dec),
-            "consent": dict(Counter(e["verdict"] for e in events if e.get("event") == "consent")),
+            "proxied": sum(1 for e in events if e.get("api") == "anthropic" and e.get("verdict") == "allow"),
         },
         "rules": Counter(e["rule"] for e in dec if ev(e) != "allow" and e.get("rule") not in (None, "ok")).most_common(10),
         "agents": sorted(Counter((e.get("agent") or e.get("principal") or "?", ev(e)) for e in dec).items()),
@@ -120,7 +120,7 @@ def stats(events: list[dict], now: datetime) -> dict:
         "rows": [
             {"ts": e["ts"][:19], "source": source_of(e), "who": e.get("agent") or e.get("principal") or e.get("user") or "",
              "verdict": ev(e) or "", "rule": e.get("rule") or "", "detail": detail_of(e)}
-            for e in reversed(events[-MAX_ROWS:]) if e.get("event") in (*DECIDING, "consent")
+            for e in reversed(events[-MAX_ROWS:]) if e.get("event") in DECIDING
         ],
     }  # fmt: skip
 
@@ -191,7 +191,7 @@ $("asof").textContent="as of "+D.now.slice(0,16).replace("T"," ")+" UTC";
  chart(m,"Blocks over time",D.blocks);
  const P=D.posture,b=sec(m,"Posture");
  el("div","","mode: "+P.mode+(P.monitor_seen?" (monitor decisions seen: denies shown are would-be)":""),b);
- el("div","","consent: "+(Object.entries(P.consent).map(([k,n])=>k+" "+n).join(", ")||"none recorded"),b)}
+ el("div","","requests through the anonymizing proxy: "+P.proxied,b)}
 {const s=$("s"),c=el("div","cols",undefined,s),col=()=>el("div","",undefined,c);
  rows(col(),"Top rules",D.rules,int,1);
  rows(col(),"Agents x verdict",D.agents.map(([[a,v],n])=>[a+" / "+v,n]),int);

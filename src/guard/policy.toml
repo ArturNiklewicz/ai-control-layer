@@ -8,7 +8,7 @@ mode = "enforce"
 # ---------------------------------------------------------------- PII & secrets
 [pii]
 # per-detection action: off | anonymize ([OSOBA]) | pseudonymize ([OSOBA_1], reversible
-# via encrypted vault) | block (whole document / tool call rejected)
+# via the host-only vault, restored in replies) | block (request / tool call rejected)
 default = "pseudonymize"
 semantic = true                 # names + addresses via the local LLM in [llm]
 semantic_on_error = "fail_closed"   # fail_closed: no output if the LLM is down | regex_only
@@ -22,20 +22,13 @@ EMAIL = "anonymize"
 PHONE = "anonymize"
 # PESEL, NIP, REGON, IBAN, ID_CARD, PERSON, ADDRESS -> default (pseudonymize)
 
-[consent]                       # anonymize/pseudonymize only after `guard login`:
-ttl_hours = 8                   # TTY + proof of the age key + explicit yes; grant is sops-sealed
-
 [injection]                     # signature feed (replaceable by an external feed, same schema)
 feed = "src/guard/signatures.json"
 user_prompt = "warn"            # off | warn (audit only) | block — the human is the principal
 reads = "block"                 # files the agent reads: indirect injection vector
 tool_output = "block"           # MCP results: high-severity hit => content withheld
 
-[vault]                         # pseudonym <-> original; sops+age encrypted, never sent to an LLM
-path = ".guard/vault.sops.json"
-age_recipient = "age1umrllqac6f5t9uehkcmf03htaxdcgzl240gyhzjv60eykkkkputq505mq2"
-
-[llm]                           # semantic NER. MUST be local/private: public hosts are refused
+[llm]                           # semantic NER on every outgoing text. MUST be private: public hosts are refused
 base_url = "http://100.117.237.101:8006/v1"   # vLLM on DGX-A over tailscale (private)
 model = "qwen3-35b"
 

@@ -69,15 +69,12 @@ class Policy:
     deny_paths: tuple[str, ...]
     deny_tokens: frozenset[str]
     agents: Mapping[str, Agent]
-    vault_path: str
-    age_recipient: str
     llm_base_url: str
     llm_model: str
     feed_path: str
     screen_prompt: Screen
     screen_reads: Screen
     screen_tool_output: Screen
-    consent_hours: float
     gateway: Gateway
     judge_threshold: float  # 0 = judge off; else score >= threshold counts as an attack
     judge_fail_closed: bool
@@ -172,15 +169,12 @@ def parse(raw: dict) -> Result[Policy, PolicyError]:
                 deny_paths=tuple(raw.get("paths", {}).get("deny", [])),
                 deny_tokens=frozenset(cmd.get("deny_tokens", [])),
                 agents=agents,
-                vault_path=raw.get("vault", {}).get("path", ".guard/vault.sops.json"),
-                age_recipient=raw.get("vault", {}).get("age_recipient", ""),
                 llm_base_url=raw.get("llm", {}).get("base_url", ""),
                 llm_model=raw.get("llm", {}).get("model", ""),
                 feed_path=inj.get("feed", "src/guard/signatures.json"),
                 screen_prompt=inj.get("user_prompt", "warn"),
                 screen_reads=inj.get("reads", "warn"),
                 screen_tool_output=inj.get("tool_output", "block"),
-                consent_hours=float(raw.get("consent", {}).get("ttl_hours", 8)),
                 gateway=Gateway(
                     models,
                     principals,
