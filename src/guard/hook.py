@@ -68,8 +68,8 @@ def proxied(env: Mapping[str, str]) -> bool:
     return urlparse(env.get("ANTHROPIC_BASE_URL", "")).hostname in ("127.0.0.1", "localhost", "::1")
 
 
-def why_blocked(via_proxy: bool) -> str:
-    if via_proxy:
+def why_blocked(blocked: list[str], policy: Policy) -> str:
+    if all(policy.action(k) == "block" for k in blocked):
         return "Secrets never leave this machine; ask the user to remove them."
     return ("This session does not go through the anonymizing proxy "
             "(set ANTHROPIC_BASE_URL=http://127.0.0.1:8787), so personal data cannot leave.")  # fmt: skip
@@ -150,7 +150,7 @@ def content_checks(
         counts, blocked = pii_counts(text, policy, via_proxy) if policy.scan_reads else ({}, [])
         info |= {"pii": counts} if counts else {}
         if blocked:
-            return deny("pii-read", f"{path.name} contains {', '.join(blocked)}. {why_blocked(via_proxy)}"), info
+            return deny("pii-read", f"{path.name} contains {', '.join(blocked)}. {why_blocked(blocked, policy)}"), info
         d, ids = screen(text, policy.screen_reads, feed, path.name)
         if ids:
             info["signatures"] = ids
@@ -188,7 +188,7 @@ def evaluate_prompt(
     info |= {"pii": counts} if counts else {}
     if blocked:
         info |= {"verdict": "deny", "rule": "pii-prompt"}
-        reason = f"Prompt contains {', '.join(blocked)}. Nothing was sent. {why_blocked(via_proxy)}"
+        reason = f"Prompt contains {', '.join(blocked)}. Nothing was sent. {why_blocked(blocked, policy)}"
         return {"decision": "block", "reason": reason}, info
     if isinstance(feed, Ok):
         d, ids = screen(prompt, policy.screen_prompt, feed.value, "prompt")

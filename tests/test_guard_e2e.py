@@ -54,14 +54,26 @@ def test_allowed_and_denied_commands(repo):
     assert verdict(hook(repo, {"tool_name": "Bash", "tool_input": {"command": "rm src/ok.py"}})) == "ask"
 
 
-def test_input_side_pii_and_injection(repo):
-    # ordinary PII passes the hook (audited): the anonymizing proxy pseudonymizes it on the way out
-    assert verdict(hook(repo, {"tool_name": "Read", "tool_input": {"file_path": str(repo / "notes.txt")}})) == "allow"
+PROXY = {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8787"}
+
+
+def test_pii_denied_unless_the_session_goes_through_the_proxy(repo):
+    # regression: after the proxy landed the hook audited PII even when nothing anonymized it
+    read = {"tool_name": "Read", "tool_input": {"file_path": str(repo / "notes.txt")}}
+    out = hook(repo, read, ANTHROPIC_BASE_URL="")
+    assert out and verdict(out) == "deny" and "anonymizing proxy" in out["hookSpecificOutput"]["permissionDecisionReason"]
+    assert verdict(hook(repo, {"hook_event_name": "UserPromptSubmit", "prompt": "klient 44051401359"}, ANTHROPIC_BASE_URL="")) == "block"
+    assert verdict(hook(repo, read, ANTHROPIC_BASE_URL="https://api.anthropic.com")) == "deny"
+    assert verdict(hook(repo, read, **PROXY)) == "allow"
     assert audit_lines(repo)[-1]["pii"] == {"PESEL": 1}
-    assert verdict(hook(repo, {"tool_name": "Read", "tool_input": {"file_path": str(repo / "keys.txt")}})) == "deny"
+
+
+def test_input_side_pii_and_injection(repo):
+    # through the proxy ordinary PII is pseudonymized on the way out; the hook only audits it
+    assert verdict(hook(repo, {"tool_name": "Read", "tool_input": {"file_path": str(repo / "keys.txt")}}, **PROXY)) == "deny"
     assert verdict(hook(repo, {"tool_name": "Read", "tool_input": {"file_path": str(repo / "evil.md")}})) == "deny"
     assert verdict(hook(repo, {"tool_name": "Read", "tool_input": {"file_path": str(repo / "src/ok.py")}})) == "allow"
-    assert verdict(hook(repo, {"hook_event_name": "UserPromptSubmit", "prompt": "znajdz klienta 44051401359"})) == "allow"
+    assert verdict(hook(repo, {"hook_event_name": "UserPromptSubmit", "prompt": "znajdz klienta 44051401359"}, **PROXY)) == "allow"
     prompt = {"hook_event_name": "UserPromptSubmit", "prompt": "use key AKIA" + "IOSFODNN7EXAMPLE"}
     assert verdict(hook(repo, prompt)) == "block"
     assert verdict(hook(repo, {"hook_event_name": "UserPromptSubmit", "prompt": "podsumuj src"})) == "allow"
