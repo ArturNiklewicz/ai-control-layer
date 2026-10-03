@@ -4,3 +4,5 @@ __pycache__/
 .pytest_cache/
 .guard/
 docs/scratchpad/
+eval/results/*
+!eval/results/baseline-*

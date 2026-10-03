@@ -1,0 +1,194 @@
+{
+  "stamp": "20261003-200527",
+  "pii": {
+    "regex": {
+      "per_kind": {
+        "ADDRESS": {
+          "tp": 0,
+          "fp": 0,
+          "fn": 60,
+          "precision": 1.0,
+          "recall": 0.0
+        },
+        "CARD": {
+          "tp": 20,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        },
+        "EMAIL": {
+          "tp": 40,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        },
+        "IBAN": {
+          "tp": 40,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        },
+        "ID_CARD": {
+          "tp": 20,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        },
+        "NIP": {
+          "tp": 20,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        },
+        "PERSON": {
+          "tp": 0,
+          "fp": 0,
+          "fn": 160,
+          "precision": 1.0,
+          "recall": 0.0
+        },
+        "PESEL": {
+          "tp": 40,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        },
+        "PHONE": {
+          "tp": 60,
+          "fp": 10,
+          "fn": 0,
+          "precision": 0.857,
+          "recall": 1.0
+        },
+        "REGON": {
+          "tp": 20,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        },
+        "SECRET": {
+          "tp": 20,
+          "fp": 0,
+          "fn": 0,
+          "precision": 1.0,
+          "recall": 1.0
+        }
+      },
+      "micro": {
+        "tp": 280,
+        "fp": 10,
+        "fn": 220,
+        "precision": 0.966,
+        "recall": 0.56
+      }
+    }
+  },
+  "injection": {
+    "injection_plen": {
+      "n_pos": 35,
+      "n_neg": 35,
+      "tpr_any": 0.457,
+      "fpr_any": 0.086,
+      "tpr_high": 0.371,
+      "fpr_high": 0.086,
+      "signatures": {
+        "CE-001": {
+          "pos": 1
+        },
+        "EX-001": {
+          "pos": 1
+        },
+        "EX-002": {
+          "pos": 2
+        },
+        "PI-001": {
+          "pos": 2,
+          "neg": 1
+        },
+        "PI-002": {
+          "pos": 2,
+          "neg": 1
+        },
+        "PI-003": {
+          "pos": 3
+        },
+        "PI-004": {
+          "pos": 3
+        },
+        "PI-005": {
+          "pos": 2,
+          "neg": 1
+        }
+      }
+    },
+    "deepset_prompt_injections": {
+      "n_pos": 263,
+      "n_neg": 399,
+      "tpr_any": 0.03,
+      "fpr_any": 0.005,
+      "tpr_high": 0.03,
+      "fpr_high": 0.0,
+      "signatures": {
+        "PI-001": {
+          "pos": 8
+        },
+        "PI-003": {
+          "pos": 1
+        },
+        "PI-007": {
+          "neg": 2
+        }
+      }
+    }
+  },
+  "latency": {
+    "pii.detect (regex)": {
+      "n": 220,
+      "p50_ms": 0.031,
+      "p95_ms": 0.055
+    },
+    "injection.scan": {
+      "n": 732,
+      "p50_ms": 0.021,
+      "p95_ms": 0.093
+    },
+    "signatures + judge (8 concurrent)": {
+      "n": 708,
+      "p50_ms": 2614.907,
+      "p95_ms": 3002.309
+    },
+    "hook.evaluate (end to end)": {
+      "n": 350,
+      "p50_ms": 0.185,
+      "p95_ms": 3.061
+    }
+  },
+  "judge_threshold": 0.7,
+  "layered": {
+    "injection_plen": {
+      "n_pos": 35,
+      "n_neg": 35,
+      "tpr": 0.971,
+      "fpr": 0.086,
+      "caught_by_judge": 21,
+      "fp_by_judge": 0,
+      "judge_errors": 0
+    },
+    "deepset_prompt_injections": {
+      "n_pos": 263,
+      "n_neg": 399,
+      "tpr": 0.43,
+      "fpr": 0.0,
+      "caught_by_judge": 105,
+      "fp_by_judge": 0,
+      "judge_errors": 0
+    }
+  }
+}
