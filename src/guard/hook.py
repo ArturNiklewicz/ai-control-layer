@@ -61,12 +61,26 @@ def summary(counts: Mapping[str, int]) -> str:
     return ", ".join(f"{k}×{n}" for k, n in sorted(counts.items()))
 
 
-def pii_counts(text: str, policy: Policy) -> tuple[dict[str, int], list[str]]:
-    """-> (every detected kind, for the audit; kinds whose action is `block`, which deny).
-    Other personal data is not denied here: the anonymizing proxy pseudonymizes it on the way
-    out, so blocking it would only stop work that can leave safely."""
+def proxied(env: Mapping[str, str]) -> bool:
+    """Is this session's model traffic routed through the local anonymizing proxy?"""
+    from urllib.parse import urlparse
+
+    return urlparse(env.get("ANTHROPIC_BASE_URL", "")).hostname in ("127.0.0.1", "localhost", "::1")
+
+
+def why_blocked(via_proxy: bool) -> str:
+    if via_proxy:
+        return "Secrets never leave this machine; ask the user to remove them."
+    return ("This session does not go through the anonymizing proxy "
+            "(set ANTHROPIC_BASE_URL=http://127.0.0.1:8787), so personal data cannot leave.")  # fmt: skip
+
+
+def pii_counts(text: str, policy: Policy, via_proxy: bool) -> tuple[dict[str, int], list[str]]:
+    """-> (every detected kind, for the audit; kinds that deny).
+    Through the anonymizing proxy only `block` kinds deny: the rest is pseudonymized on the way
+    out. Without it the hook is the last line, so every detected kind denies (fail closed)."""
     counts = Counter(s.kind for s in detect(text) if policy.action(s.kind) != "off")
-    return dict(counts), sorted(k for k in counts if policy.action(k) == "block")
+    return dict(counts), sorted(k for k in counts if not via_proxy or policy.action(k) == "block")
 
 
 def screen(
@@ -111,7 +125,7 @@ def read_targets(tool: str, tool_input: Mapping, cwd: Path) -> list[Path]:
 
 
 def content_checks(
-    tool: str, tool_input: Mapping, cwd: Path, policy: Policy, feed
+    tool: str, tool_input: Mapping, cwd: Path, policy: Policy, feed, via_proxy: bool = False
 ) -> tuple[Decision | None, dict]:
     """Input side: what the agent is about to read (PII, injection) or write (blocked kinds)."""
     info: dict = {}
@@ -133,14 +147,10 @@ def content_checks(
             if policy.scan_reads:
                 return deny("unscannable", f"{path.name} could not be read for scanning"), info
             continue
-        counts, blocked = pii_counts(text, policy) if policy.scan_reads else ({}, [])
+        counts, blocked = pii_counts(text, policy, via_proxy) if policy.scan_reads else ({}, [])
         info |= {"pii": counts} if counts else {}
         if blocked:
-            return deny(
-                "secret-read",
-                f"{path.name} contains {', '.join(blocked)}. Secrets never reach the model; "
-                "ask the user to move them out of the file.",
-            ), info
+            return deny("pii-read", f"{path.name} contains {', '.join(blocked)}. {why_blocked(via_proxy)}"), info
         d, ids = screen(text, policy.screen_reads, feed, path.name)
         if ids:
             info["signatures"] = ids
@@ -170,15 +180,15 @@ def content_checks(
 
 
 def evaluate_prompt(
-    prompt: str, policy: Policy, feed, base: dict
+    prompt: str, policy: Policy, feed, base: dict, via_proxy: bool = False
 ) -> tuple[dict | None, dict]:
     """Input side for the human's prompt. It cannot be rewritten here, only stopped."""
     info = dict(base, channel="user_prompt")
-    counts, blocked = pii_counts(prompt, policy)
+    counts, blocked = pii_counts(prompt, policy, via_proxy)
     info |= {"pii": counts} if counts else {}
     if blocked:
-        info |= {"verdict": "deny", "rule": "secret-prompt"}
-        reason = f"Prompt contains {', '.join(blocked)}. Nothing was sent: secrets never leave this machine."
+        info |= {"verdict": "deny", "rule": "pii-prompt"}
+        reason = f"Prompt contains {', '.join(blocked)}. Nothing was sent. {why_blocked(via_proxy)}"
         return {"decision": "block", "reason": reason}, info
     if isinstance(feed, Ok):
         d, ids = screen(prompt, policy.screen_prompt, feed.value, "prompt")
@@ -236,7 +246,7 @@ def evaluate(
     if event == "UserPromptSubmit":
         prompt = payload.get("prompt")
         if isinstance(prompt, str):
-            out, info = evaluate_prompt(prompt, policy, feed, base)
+            out, info = evaluate_prompt(prompt, policy, feed, base, proxied(env))
         else:
             out = denial(event, "malformed", "prompt missing or not a string")
             info = base | {
@@ -267,7 +277,7 @@ def evaluate(
     else:
         d = decide_tool(tool, tool_input, cwd, root, policy, agent)
         if d.verdict != "deny":
-            c, extra = content_checks(tool, tool_input, cwd, policy, feed.value)
+            c, extra = content_checks(tool, tool_input, cwd, policy, feed.value, proxied(env))
             info |= extra
             d = c or d
     info |= {"verdict": d.verdict, "rule": d.rule}

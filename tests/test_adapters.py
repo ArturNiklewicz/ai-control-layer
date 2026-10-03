@@ -93,7 +93,7 @@ def test_cursor_prompt_with_pii_is_stopped_and_malformed_denied(repo):
             "attachments": [],
         },
     )
-    assert out["continue"] is False and "secrets never leave" in out["user_message"]
+    assert out["continue"] is False and "pii-prompt" in out["user_message"]
     assert run(
         repo, "cursor", {"hook_event_name": "beforeSubmitPrompt", "prompt": "hi"}
     ) == {"continue": True}
