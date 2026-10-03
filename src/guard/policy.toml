@@ -51,22 +51,29 @@ deny = [
 
 [commands]                      # whitelist of command prefixes; everything else is denied
 allow = [
-  "ls", "pwd", "cat", "head", "tail", "wc", "grep", "rg", "find", "diff", "sort", "uniq",
+  "ls", "pwd", "cat", "head", "tail", "wc", "grep", "rg", "find", "diff", "uniq",
   "echo", "mkdir", "touch", "cd",
-  "git status", "git diff", "git log", "git show", "git add", "git branch",
-  "git switch", "git restore", "git ls-files", "git blame", "git stash list",
+  "git status", "git diff", "git log", "git show", "git add",
+  "git branch",                 # listing only: commands.py rejects create/delete/edit forms
+  "git ls-files", "git blame", "git stash list",
   "uv run pytest", "uv run --frozen pytest", "pytest",
   "uv run python -m src.guard.cli scan",   # counts only; restore/pseudonymize stay human-only
 ]
 ask = [                         # irreversible -> human confirms in the Claude Code prompt
   "rm", "mv", "git commit", "git reset", "git checkout", "git stash drop", "git clean",
+  "git switch", "git restore",  # can roll src/guard back (policy downgrade)
 ]
 # forbidden anywhere in an allowed command. (`git -c x status` already fails the prefix match:
 # options before the subcommand never match "git status".)
 deny_tokens = [
   "-C", "--git-dir", "--work-tree", "--exec-path",
-  "-exec", "-execdir", "-delete", "-ok", "--force", "-f", "-rf", "-fr",
+  "-exec", "-execdir", "-delete", "-ok", "-okdir", "--force", "-f", "-rf", "-fr",
+  "-O",                                                  # glued path value: git diff -O/etc/x
+  "-fprint", "-fprint0", "-fprintf", "-fls",             # find: write files anywhere
+  "--pre", "--pre-glob", "--hostname-bin", "--compress-program",   # rg/sort: run a program
 ]
+# Matching (commands.py): `--opt` also as `--opt=value`; single-letter `-X` also inside clusters
+# and glued values (`-rf`, `-f/etc/passwd`); longer `-opt` as prefix. pytest/tail extras live there.
 
 [tools]
 deny = ["WebFetch", "WebSearch"]   # no data egress from the agent

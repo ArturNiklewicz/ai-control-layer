@@ -104,3 +104,53 @@ def test_roles_differ(repo):
 
 def test_root_must_be_real_path(repo):
     assert Path(repo).resolve() == Path(os.path.realpath(repo))
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "cat .ENV", "cat SRC/GUARD/policy.toml", "cat .GIT/config", "cat x.PEM",  # 1 case
+        "sort -o../evil README.md", "sort -osrc/guard/policy.toml README.md",  # 2 sort gone
+        "cat {.env,x}", "cat .e{n,}v", "cat {/etc,x}/passwd", "echo x >{/etc/x,y}",  # 3 braces
+        "ls {..,.}",
+        "rg --pre=sh x", "rg --pre sh x", "rg --hostname-bin=sh x",  # 4 code exec
+        "find . -okdir sh {} +", "find . -fprint x", "find . -fls x",
+        "grep -f/etc/passwd x", "grep -rf x y", "git diff -O/etc/passwd",  # 5 glued
+        "rg secret", "grep -r secret .", "grep -r secret", "ls -R", "rg -e x",  # 6 recursive
+        "grep -rn secret src", "grep --recursive x .",
+        "git show HEAD:.env", "git show :.env", "git show HEAD:src/guard/policy.toml",  # 7 git
+        "git add -A", "git add .", "git add --all", "git add -u",
+        "git branch -D main", "git branch --edit-description", "git branch newbranch",
+        "git branch -m x",
+        "uv run pytest -p evil", "pytest -c x.ini", "pytest -o addopts=x", "pytest --pyargs x",  # 8
+        "uv run pytest --rootdir=/", "pytest --junitxml=x", "pytest --basetemp=/x", "pytest --pdb",
+        "tail -F x", "tail --follow x",
+    ],
+)  # fmt: skip
+def test_reproduced_bypasses_denied(cmd, repo):
+    (repo / "src/guard").mkdir()
+    (repo / "src/guard/policy.toml").write_text("x")
+    d = bash(cmd, repo)
+    assert d.verdict == "deny", (cmd, d)
+
+
+@pytest.mark.parametrize(
+    "cmd, verdict",
+    [
+        ("git switch main", "ask"),
+        ("git restore .", "ask"),
+        ("git switch --discard-changes main", "ask"),
+        ("git branch", "allow"),
+        ("git branch --list", "allow"),
+        ("git branch --show-current", "allow"),
+        ("git add src/a.py", "allow"),
+        ("git show HEAD:src/a.py", "allow"),
+        ("grep -rn x src", "allow"),
+        ("rg x src", "allow"),
+        ("uv run pytest -q -k foo", "allow"),
+        ("tail -n5 src/a.py", "allow"),
+        ("find src -type f -name '*.py'", "allow"),
+    ],
+)
+def test_bypass_fixes_keep_normal_use(cmd, verdict, repo):
+    assert bash(cmd, repo).verdict == verdict, bash(cmd, repo)
