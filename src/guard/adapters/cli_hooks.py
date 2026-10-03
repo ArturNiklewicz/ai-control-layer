@@ -7,11 +7,14 @@ point is `... || exit 2` (see templates/) and this module always prints a decisi
 """
 
 import json
+import os
 import re
 import shlex
+import signal
 import sys
 from collections.abc import Callable
 
+from src.guard.hook import BUDGET_S
 from src.guard.adapters import Verdict, check, mcp_name
 
 # --- Cursor (https://cursor.com/docs/agent/hooks) ---
@@ -229,7 +232,14 @@ def main(argv: list[str] | None = None) -> int:
     if len(args) != 1 or args[0] not in HARNESSES:
         print(f"usage: cli_hooks {'|'.join(HARNESSES)}", file=sys.stderr)
         return 2
+    def expired(*_: object) -> None:  # these harnesses let the tool run on a hook timeout
+        print("[guard:timeout] scan exceeded the time budget", file=sys.stderr, flush=True)
+        os._exit(2)  # exit 2 = block in Cursor, Gemini and Codex
+
+    signal.signal(signal.SIGALRM, expired)  # ponytail: POSIX only, like hook.py
+    signal.alarm(int(os.environ.get("GUARD_HOOK_BUDGET_S") or BUDGET_S))
     print(json.dumps(run(args[0], sys.stdin.read())), flush=True)
+    signal.alarm(0)
     return 0
 
 

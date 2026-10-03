@@ -343,3 +343,24 @@ def test_langchain_tool_guard(repo):
         req("Bash", {"command": "ls", "echo": INJ}), handler
     )
     assert poisoned.status == "error" and "injection-output" in poisoned.content
+
+
+def test_cli_hook_time_budget_exits_2(repo):
+    # regression: no budget -> a slow scan hits the harness timeout, which lets the tool run
+    p = subprocess.run(
+        [PY, "-c", "import time, sys; sys.stdin = type('S', (), {'read': lambda s: time.sleep(5)})();"
+         "from src.guard.adapters.cli_hooks import main; main(['cursor'])"],
+        capture_output=True, text=True, cwd=ROOT, env=os.environ | {"GUARD_HOOK_BUDGET_S": "1"}, timeout=20,
+    )  # fmt: skip
+    assert p.returncode == 2 and "guard:timeout" in p.stderr
+
+
+def test_payload_agent_type_cannot_pick_a_role(repo):
+    # regression: a harness payload field named agent_type overrode the integration's identity
+    from src.guard.adapters import check
+
+    pol = (repo / "policy.toml").read_text() + '\n[agents.admin]\ncommands = ["cat"]\n'
+    (repo / "policy.toml").write_text(pol)
+    p = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "wc ok.txt"}, "agent_type": "admin"}
+    assert check(p, "codex").verdict == "allow"  # default role allows wc; admin would not
+    assert check(p, "claude-agent-sdk").verdict == "deny"  # that SDK sets agent_type itself

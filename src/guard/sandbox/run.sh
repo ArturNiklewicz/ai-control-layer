@@ -50,7 +50,13 @@ mkdir -p "$g"; [ -L "$g/audit.jsonl" ] && { echo "refusing symlinked audit.jsonl
 # Docker Desktop: host-gateway = host; połączenia z kontenera trafiają na 127.0.0.1 hosta. Linux: GUARD_SINK_BIND=<docker0 ip>.
 sinkroot="$REPO"; [ "${1:-}" = selftest ] && sinkroot=$(mktemp -d)
 portfile=$(mktemp)
-(cd "$REPO" && exec uv run python -m src.guard.audit_sink --root "$sinkroot" --bind "${GUARD_SINK_BIND:-127.0.0.1}" --port-file "$portfile") &
+# host code must not import from paths the agent can write (src/, pyproject.toml, .venv):
+# copy the two stdlib-only modules out of the read-only src/guard and run them isolated
+sinkcode=$(mktemp -d); mkdir -p "$sinkcode/src/guard"
+cp "$REPO"/src/guard/audit.py "$REPO"/src/guard/audit_sink.py "$sinkcode/src/guard/"
+sinkpy=$(cd "$sinkcode" && uv python find --no-project '>=3.12')  # interpreter only; no project files read
+(cd "$sinkcode" && exec "$sinkpy" -I -c 'import runpy, sys; sys.path.insert(0, sys.argv.pop(1)); runpy.run_module("src.guard.audit_sink", run_name="__main__", alter_sys=True)' \
+  "$sinkcode" --root "$sinkroot" --bind "${GUARD_SINK_BIND:-127.0.0.1}" --port-file "$portfile") &
 sink=$!; trap 'kill "$sink" 2>/dev/null' EXIT
 for _ in $(seq 150); do [ -s "$portfile" ] && break; kill -0 "$sink" 2>/dev/null || break; sleep 0.2; done
 [ -s "$portfile" ] || { echo "audit sink failed to start" >&2; exit 1; }

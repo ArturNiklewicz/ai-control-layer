@@ -36,6 +36,8 @@ def check(
     """payload in Claude Code hook shape (hook_event_name, tool_name, tool_input, prompt,
     tool_response). `agent` comes from the harness integration, never from the model."""
     env = dict(os.environ) | ({"GUARD_AGENT": agent} if agent else {})
+    if harness != "claude-agent-sdk":  # only that SDK sets agent_type itself; elsewhere it is payload data
+        payload = {k: v for k, v in payload.items() if k != "agent_type"}
     r = root_of(root)
     out, info = decide(
         payload | {"cwd": str(r / str(payload.get("cwd") or ".")), "harness": harness}, r, env  # relative cwd: from the project root
