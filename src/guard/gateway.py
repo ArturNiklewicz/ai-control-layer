@@ -11,6 +11,7 @@ Any guard failure answers an error before the upstream is called (fail closed).
 """
 
 import argparse
+import fnmatch
 import hashlib
 import json
 import os
@@ -28,11 +29,12 @@ from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from src.guard import audit
+from src.guard import anthropic, audit
+from src.guard.anonymizer import Anonymizer, json_escape
 from src.guard.judge import Verdict, judge
 from src.guard.injection import Signature, load_feed, scan, worst
 from src.guard.pii import Span, anonymize, detect, pseudonymize, restore
-from src.guard.vault import atomic_write
+from src.guard.fsio import atomic_write
 from src.guard.policy import Gateway, Model, Policy, Principal, load
 from src.result import Err, Ok, Result
 
@@ -287,6 +289,31 @@ def spans_of(policy: Policy) -> Callable[[str], Result[list[Span], str]]:
     return lambda t: find_spans(t, policy)
 
 
+ENGINES: dict[tuple, Anonymizer] = {}
+ENGINE_LOCK = threading.Lock()
+
+
+def engine(policy: Policy) -> Anonymizer:
+    """One anonymizer (vault + caches) per model config, state in the host-only dir."""
+    key = (policy.semantic, policy.semantic_fail_closed, policy.llm_base_url, policy.llm_model)
+    with ENGINE_LOCK:
+        if key not in ENGINES:
+            from src.guard.cli import state
+
+            if not policy.semantic:
+                complete = None
+            elif public(policy.llm_base_url):  # PII must never reach a public model
+                bad = f"llm.base_url {policy.llm_base_url!r} is not private"
+                complete = lambda *a, **kw: Err(bad)  # noqa: E731
+            else:
+                complete = local_completer(policy.llm_base_url, policy.llm_model)
+            ENGINES[key] = Anonymizer(state() / "anonymizer.json", complete, policy.semantic_fail_closed)
+        return ENGINES[key]
+
+
+HOP = frozenset({"host", "content-length", "connection", "accept-encoding", "transfer-encoding", "keep-alive"})
+
+
 def upstream_request(model: Model, body: dict) -> urllib.request.Request:
     headers = {"Content-Type": "application/json"}
     if model.key_env and (key := os.environ.get(model.key_env)):
@@ -345,6 +372,11 @@ class Handler(BaseHTTPRequestHandler):
             return Refusal(401, "unknown-principal", "invalid API key")
         return policy, *who
 
+    def do_HEAD(self):  # Claude Code's connection-warming probe
+        self.send_response(200 if self.path.startswith("/api/hello") else 404)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_GET(self):
         match self.caller():
             case Refusal() as r:
@@ -381,6 +413,9 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(
                 self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}"
             )
+            path = self.path.split("?")[0].rstrip("/")
+            if path in ("/v1/messages", "/v1/messages/count_tokens") and isinstance(body, dict):
+                return self.messages(path, body, event, t0)
             if (
                 self.path.rstrip("/") != "/v1/chat/completions"
                 or not isinstance(body, dict)
@@ -431,6 +466,99 @@ class Handler(BaseHTTPRequestHandler):
             Exception
         ) as e:  # fail closed: nothing reaches the upstream after a guard bug
             self.refuse(Refusal(500, "internal-error", type(e).__name__), event)
+
+    # --- Anthropic Messages API (Claude Code: ANTHROPIC_BASE_URL) ---
+
+    def messages(self, path: str, body: dict, event: dict, t0: float):
+        """The caller's own Anthropic credential goes upstream untouched: this proxy does not
+        authenticate, it anonymizes. Every string leaves pseudonymized or not at all."""
+        match load(POLICY):
+            case Err(e):
+                return self.refuse(Refusal(503, "policy-invalid", e.detail), event)
+            case Ok(policy):
+                pass
+        gw, model = policy.gateway, str(body.get("model", ""))
+        cred = self.headers.get("x-api-key") or self.headers.get("Authorization") or ""
+        event |= {"api": "anthropic", "model": model, "principal": "anthropic:" + hashlib.sha256(cred.encode()).hexdigest()[:8]}
+        if not any(fnmatch.fnmatchcase(model, p) for p in gw.anthropic_models):
+            return self.refuse(Refusal(403, "model-denied", f"model {model!r} is not allowed"), event)
+        eng = engine(policy)
+        match eng.pseudonymize_many(anthropic.strings(body), policy):
+            case Err(e):
+                return self.refuse(Refusal(503, "pii-detector", e), event)
+            case Ok((sent, counts)):
+                pass
+        out = anthropic.walk(body, lambda t: sent[t])
+        if hits := sorted({h.id for t in sent.values() for h in self.feed_hits(policy, t)}):
+            event["signatures"] = hits  # ponytail: audit only; a block would kill the session (history is resent)
+        event |= {"pii": dict(counts)} if counts else {}
+        event["guard_ms"] = round((time.perf_counter() - t0) * 1000, 2)
+        headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP} | {"Accept-Encoding": "identity"}
+        req = urllib.request.Request(gw.anthropic_upstream + self.path, json.dumps(out, ensure_ascii=False).encode(), headers, method="POST")
+        try:
+            resp = urllib.request.urlopen(req, timeout=600)
+        except urllib.error.HTTPError as e:
+            audit.record(ROOT, event | {"verdict": "allow", "rule": f"upstream-{e.code}"}, datetime.now(UTC))
+            return self.relay(e.code, e.headers, e.read())
+        except (urllib.error.URLError, TimeoutError) as e:
+            return self.refuse(Refusal(502, "upstream-unreachable", str(e)), event)
+        done = lambda usage: (eng.save(), audit.record(ROOT, event | {  # noqa: E731
+            "verdict": "allow", "rule": "ok", "tokens_in": usage[0], "tokens_out": usage[1], "tokens": sum(usage),
+            "latency_ms": round((time.perf_counter() - t0) * 1000, 1)}, datetime.now(UTC)))  # fmt: skip
+        with resp:
+            if path.endswith("count_tokens") or not body.get("stream"):
+                reply = json.loads(resp.read())
+                if not path.endswith("count_tokens"):
+                    reply = anthropic.restore_reply(reply, eng.restore, eng.remember)
+                u = reply.get("usage") or {}
+                done((int(u.get("input_tokens") or reply.get("input_tokens") or 0), int(u.get("output_tokens") or 0)))
+                self.relay(resp.status, resp.headers, json.dumps(reply, ensure_ascii=False).encode())
+            else:
+                self.relay_stream(resp, eng, done)
+
+    def feed_hits(self, policy: Policy, text: str):
+        match load_feed(ROOT / policy.feed_path):
+            case Ok(feed):
+                return scan(text, feed)
+        return []
+
+    def relay(self, status: int, headers, data: bytes) -> None:
+        self.send_response(status)
+        for k, v in headers.items():
+            if k.lower() not in HOP | {"content-encoding"}:
+                self.send_header(k, v)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def relay_stream(self, resp, eng: Anonymizer, done: Callable[[tuple[int, int]], object]) -> None:
+        self.send_response(resp.status)
+        for k, v in resp.headers.items():
+            if k.lower() not in HOP | {"content-encoding"}:
+                self.send_header(k, v)
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+        sr = anthropic.StreamRestorer(eng.restore, lambda t: eng.restore(t, json_escape), eng.remember)
+        name, data = "", []
+        for raw in resp:
+            line = raw.decode("utf-8").rstrip("\r\n")
+            if line.startswith("event:"):
+                name = line[6:].strip()
+            elif line.startswith("data:"):
+                data.append(line[5:].strip())
+            elif line == "" and data:
+                try:
+                    events = sr.event(name, json.loads("\n".join(data)))
+                except ValueError:
+                    events = []
+                    self.wfile.write(f"event: {name}\ndata: {chr(10).join(data)}\n\n".encode())
+                for n, d in events:
+                    if n == "message_stop":  # account before the client may hang up
+                        done((sr.usage[0], sr.usage[1]))
+                    self.wfile.write(anthropic.sse(n, d))
+                self.wfile.flush()
+                name, data = "", []
 
     def call(self, model: Model, body: dict, event: dict):
         try:

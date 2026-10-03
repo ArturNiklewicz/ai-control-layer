@@ -12,7 +12,8 @@ mode = "enforce"
 default = "pseudonymize"
 semantic = true                 # names + addresses via the local LLM in [llm]
 semantic_on_error = "fail_closed"   # fail_closed: no output if the LLM is down | regex_only
-scan_reads = true               # agent Read of a file with PII is denied -> use anonymized copy
+scan_reads = true               # hook: files the agent reads are scanned; `block` kinds deny, the rest is audited
+allow = ["Claude", "Claude Code", "Anthropic", "Opus", "Sonnet", "Haiku", "Qwen", "OpenAI", "GitHub"]  # never PII
 
 [pii.kinds]                     # stricter / looser per category
 SECRET = "block"                # keys, tokens, passwords: never leave, never written by agent
@@ -46,6 +47,10 @@ on_error = "fail_closed"        # fail_closed: refuse if the judge is down | all
 [gateway]                       # OpenAI-compatible LLM gateway (python -m src.guard.gateway)
 injection = "block"             # off | warn | block: signatures on user/tool messages
 pii_public = "pseudonymize"     # PII bound for a public model: block | pseudonymize (restored in reply)
+
+[gateway.anthropic]             # Messages API proxy: ANTHROPIC_BASE_URL=http://127.0.0.1:8787
+upstream = "https://api.anthropic.com"
+models = ["claude-*"]           # fnmatch; anything else is refused
 
 [gateway.models]                # allowed models; anything else is refused. USD per 1M tokens
 "qwen3-35b" = { upstream = "http://100.117.237.101:8006/v1", input_usd_mtok = 0.0, output_usd_mtok = 0.0 }

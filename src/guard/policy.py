@@ -53,6 +53,8 @@ class Gateway:
     principals: Mapping[str, Principal]
     injection: Screen
     pii_public: Literal["block", "pseudonymize"]  # PII bound for a non-private upstream
+    anthropic_upstream: str  # Messages API proxy (Claude Code: ANTHROPIC_BASE_URL)
+    anthropic_models: tuple[str, ...]  # fnmatch patterns; empty = none allowed
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +62,7 @@ class Policy:
     mode: Mode
     pii_default: Action
     pii_kinds: Mapping[str, Action]
+    pii_allow: frozenset[str]  # casefolded names that are never PII (Claude, Anthropic, ...)
     semantic: bool
     semantic_fail_closed: bool
     scan_reads: bool
@@ -161,6 +164,7 @@ def parse(raw: dict) -> Result[Policy, PolicyError]:
                 mode=mode,
                 pii_default=actions.pop("default"),
                 pii_kinds=actions,
+                pii_allow=frozenset(str(a).casefold() for a in pii.get("allow", [])),
                 semantic=bool(pii.get("semantic", False)),
                 semantic_fail_closed=pii.get("semantic_on_error", "fail_closed")
                 == "fail_closed",
@@ -182,6 +186,8 @@ def parse(raw: dict) -> Result[Policy, PolicyError]:
                     principals,
                     gw.get("injection", "block"),
                     gw.get("pii_public", "block"),
+                    str(gw.get("anthropic", {}).get("upstream", "https://api.anthropic.com")).rstrip("/"),
+                    tuple(gw.get("anthropic", {}).get("models", [])),
                 ),
                 judge_threshold=threshold,
                 judge_fail_closed=judge.get("on_error", "fail_closed") == "fail_closed",
