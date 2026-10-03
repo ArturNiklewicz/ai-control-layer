@@ -87,17 +87,24 @@ Markers are registered in `tests/conftest.py`. Integration tests skip with a rea
 
 | Requirement                                           | Status                                                                     |
 | ----------------------------------------------------- | -------------------------------------------------------------------------- |
-| Central policy, thresholds, block/redact, live reload | ✅ `policy.toml`. Allowed-models list missing.                             |
+| Central policy, thresholds, block/redact, live reload | ✅ `policy.toml`, incl. `[gateway.models]` allowed list.                  |
 | Deterministic controls (PII, secrets, authz)          | ✅                                                                         |
-| Semantic (AI) controls                                | ⚠️ NER only. No LLM-judge for injection/output yet (ADR-0004).             |
-| Budget / resource governance                          | ❌ No LLM gateway or token/cost budgets (ADR-0003). Only container limits. |
+| Semantic (AI) controls                                | ✅ NER + `judge.py` (local model, residual risk after signatures).         |
+| Budget / resource governance                          | ✅ `gateway.py`: per-principal daily token/USD budgets, host-only ledger.  |
 | Historical attack mitigation, external feed           | ✅ `signatures.json`, swappable. No remote fetch, signing or versioning.   |
-| Reporting + exportable audit                          | ⚠️ CLI `report` + JSONL. **No interactive dashboard UI.**                  |
+| Reporting + exportable audit                          | ✅ `cli dashboard`: offline HTML, management + security, JSON/CSV export.  |
 | Self-testing suite (positive + negative)              | ✅                                                                         |
 | Architecture diagram                                  | ✅ Mermaid in ADR-0001.                                                    |
-| Performance telemetry                                 | ⚠️ Hook `latency_ms` p50/p95 in the report. No gateway throughput numbers. |
+| Performance telemetry                                 | ✅ hook/gateway `guard_ms` p50/p95 in dashboard; `eval/run.py` per layer.   |
 
-## Known gaps / risks (prioritized)
+## Session 2026-10-03 results
+
+- Eval baselines: `eval/results/baseline-{ner,judge}.md`. Signatures alone TPR 0.37 (PL/EN) / 0.03 (deepset); with judge 0.97 / 0.43, judge added 0 FP. Regex PHONE flags 9-digit codes (P 0.86).
+- Review: 4 refuter passes, all reproduced findings fixed with regression tests (commands, hook, mcp_proxy, consent/vault, audit).
+- Adapters: `src/guard/adapters/` (Cursor, Gemini, Codex CLI hooks + templates; Claude Agent SDK, OpenAI Agents, LangChain). SDK tests need `uv sync --group harness`.
+- Open: forged audit appends via sink (no per-session HMAC), streamed gateway replies not masked, PHONE precision, deepset recall 0.43.
+
+## Known gaps / risks (prioritized, pre-session list)
 
 1. **R2 audit tamper:** `.guard/` is writable inside the container (same uid). Fix with an append-only sidecar or by shipping events to Langfuse on DGX-B (ADR-0002).
 2. **Budgets:** an OpenAI-compatible gateway (FastAPI is not a dependency here yet; stdlib `http.server` or add fastapi+uvicorn). It needs:
