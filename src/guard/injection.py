@@ -67,9 +67,20 @@ def normalize(text: str) -> str:
     return unicodedata.normalize("NFKC", text)
 
 
+_JSON_ESC = re.compile(r"\\([nrtbf\"'\\/])")
+_ESCAPED = {"n": "\n", "r": "\r", "t": "\t", "b": "\b", "f": "\f", '"': '"', "'": "'", "\\": "\\", "/": "/"}
+
+
+def unescape(text: str) -> str:
+    """Decode literal JSON escapes. Tool results ride to the hook as JSON strings, so their
+    newlines are two-char `\\n` sequences: `\\nIgnore` has no word boundary before `Ignore`
+    and \\b-anchored signatures miss it. Screening must see the prose the model will read."""
+    return _JSON_ESC.sub(lambda m: _ESCAPED[m.group(1)], text)
+
+
 def scan(text: str, feed: tuple[Signature, ...]) -> list[Hit]:
     # raw text too: NFKC can erase the hidden characters some signatures look for
-    variants = {text, normalize(text)}
+    variants = {text, normalize(text), unescape(text)}
     return [
         Hit(s.id, s.category, s.severity)
         for s in feed
