@@ -62,7 +62,7 @@ deny = [
   ".env", ".env.*", "secrets.env", "*.pem", "*.key",
   ".git/**",                    # hooks/config = code execution and remote rewrites
   ".guard/**",                  # vault, audit log
-  ".claude/**",                 # agent may not rewrite its own hooks/permissions
+  ".hermes/**",                 # agent may not rewrite its own config/plugins (Hermes)
   "src/guard/**",               # nor this policy or the guard itself
   "data/raw/**",                # raw documents: only the anonymized copies are readable
 ]
@@ -94,7 +94,8 @@ deny_tokens = [
 # and glued values (`-rf`, `-f/etc/passwd`); longer `-opt` as prefix. pytest/tail extras live there.
 
 [tools]
-deny = ["WebFetch", "WebSearch"]   # no data egress from the agent
+deny = ["WebFetch", "WebSearch",                 # no data egress from the agent (Claude Code names)
+        "web_search", "web_extract", "browser_cdp", "browser_exec", "computer_use"]  # Hermes names
 
 [mcp]                              # mcp__<server>__<tool> patterns (also enforced by mcp_proxy)
 allow = ["mcp__serena__find_*", "mcp__serena__get_*", "mcp__serena__list_*", "mcp__serena__read_*"]

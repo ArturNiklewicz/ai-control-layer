@@ -1,0 +1,3 @@
+name: ai-control-layer
+version: "1.0"
+description: AI Control Layer guardrail bridge — routes Hermes tool calls, tool results and prompts through the guard decision core (src.guard).

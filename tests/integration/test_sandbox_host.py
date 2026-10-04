@@ -5,7 +5,9 @@ import sys
 
 import pytest
 
-from tests.integration.conftest import ROOT
+from tests.integration.conftest import DGX, ROOT, reachable
+
+DGX_UP = reachable(*DGX)  # tailnet may be down on the host: skip, don't fail, box-side DGX probes
 
 pytestmark = [pytest.mark.integration, pytest.mark.sandbox, pytest.mark.docker]
 
@@ -39,11 +41,19 @@ def test_attack_blocked_by_kernel(say, docker_env, scenario, code):
     if scenario in HOST_SAFE:
         host = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=20)
         say.step(f"host (bez sandboxa): {'UDAŁO SIĘ' if host.returncode == 0 else 'nie udało się'} {host.stdout.strip()[:60]}")
-    r = in_box(code, docker_env)
+    fake_env = ROOT / ".env"
+    made_env = scenario == "czytanie .env repo" and not fake_env.exists()
+    if made_env:  # the mask only covers files that exist; the clone may not have one
+        fake_env.write_text("SENTINEL=must-never-reach-the-box\n")
+    try:
+        r = in_box(code, docker_env)
+    finally:
+        if made_env:
+            fake_env.unlink()
     err = (r.stderr.strip().splitlines() or [""])[-1]
     if scenario == "czytanie .env repo":
         say.blocked(f"kontener: plik zamaskowany → {r.stdout.strip()}")
-        assert r.stdout.strip() == "''"
+        assert "SENTINEL" not in r.stdout and r.stdout.rstrip().endswith("''")  # masked to empty (entrypoint banner precedes)
     else:
         say.blocked(f"kontener: {err}")
         assert r.returncode != 0, r.stdout
@@ -55,10 +65,12 @@ def test_attack_blocked_by_kernel(say, docker_env, scenario, code):
     [
         pytest.param("praca w repo", "open('tests/.probe','w').write('x');import os;os.remove('tests/.probe');print('rw ok')", id="repo-rw"),
         pytest.param("lokalny LLM (DGX)", "import socket;socket.create_connection(('100.117.237.101',8006),timeout=5);print('dgx ok')", id="dgx"),
-        pytest.param("API modelu", "import socket;socket.create_connection(('api.anthropic.com',443),timeout=5);print('api ok')", id="api"),
+        pytest.param("brama strażnika", "import socket;socket.create_connection(('127.0.0.1',8787),timeout=5);print('gateway ok')", id="gateway"),
     ],
 )
 def test_allowed_work_still_possible(say, docker_env, scenario, code):
+    if scenario == "lokalny LLM (DGX)" and not DGX_UP:
+        pytest.skip("DGX tailnet down on the host")
     say.title(f"Dozwolone: {scenario}")
     r = in_box(code, docker_env)
     say.ok(r.stdout.strip() or r.stderr.strip()[-200:])

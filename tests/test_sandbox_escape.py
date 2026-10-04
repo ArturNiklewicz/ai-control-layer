@@ -6,6 +6,7 @@ the hook cannot see it, so the kernel must stop it.
 """
 
 import os
+import os
 import shutil
 import socket
 import subprocess
@@ -44,7 +45,8 @@ def test_env_file_is_masked():
 
 
 @pytest.mark.parametrize(
-    "path", [".git/hooks/pre-commit", ".git/config", "src/guard/policy.toml", "src/guard/new.py", ".claude/settings.json"]
+    "path", [".git/hooks/pre-commit", ".git/config", "src/guard/policy.toml", "src/guard/new.py",
+               ".hermes/plugins/ai-control-layer/plugin.yaml", ".hermes/plugins/ai-control-layer/__init__.py"]
 )
 def test_rules_and_git_are_read_only(path):
     with pytest.raises(OSError) as e:
@@ -99,10 +101,14 @@ def test_ipv6_is_blocked():
     assert not connect("2606:4700:4700::1111", 443)
 
 
-def test_allowlisted_model_api_is_reachable():
-    assert connect("api.anthropic.com", 443)
+def test_model_api_egress_is_closed():
+    # Hermes replaces Claude Code: no Anthropic egress exists any more — the only model door is
+    # the guard gateway (127.0.0.1:8787) and its upstream (DGX). HOSTS stays empty by design.
+    assert not connect("api.anthropic.com", 443)
 
 
+@pytest.mark.skipif(os.environ.get("DGX_STATE") == "unreachable",
+                    reason="DGX tailnet down on the host (run.sh probed it)")
 def test_allowlisted_local_llm_is_reachable():
     assert connect("100.117.237.101", 8006)
 

@@ -38,7 +38,7 @@ ACTIONS = [
     ("force push", bash("git push --force origin main"), "deny", [N]),
     ("find -exec", bash("find . -name '*.py' -exec rm {} ;"), "deny", [N]),
     ("zmiana własnej polityki", {"tool_name": "Write", "tool_input": {"file_path": "policy.toml", "content": "mode='monitor'"}}, "deny", [N, pytest.mark.policy]),
-    ("zmiana ustawień Claude", {"tool_name": "Write", "tool_input": {"file_path": ".claude/settings.json", "content": "{}"}}, "deny", [N]),
+    ("zmiana ustawień agenta", {"tool_name": "Write", "tool_input": {"file_path": ".hermes/config.yaml", "content": "{}"}}, "deny", [N]),
     ("zapis sekretu do pliku", {"tool_name": "Write", "tool_input": {"file_path": "src/cfg.py", "content": "KEY='AKIAIOSFODNN7EXAMPLE'"}}, "deny", [N, pytest.mark.pii]),
     ("odczyt notatki z PESEL", {"tool_name": "Read", "tool_input": {"file_path": "docs/mops_notatka.txt"}}, "deny", [N, pytest.mark.pii]),
     ("cat CSV z PESEL", bash("cat docs/beneficjenci.csv"), "deny", [N, pytest.mark.pii]),

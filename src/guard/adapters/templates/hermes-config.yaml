@@ -1,0 +1,11 @@
+# Guarded Hermes config for the sandbox (ADR-0001). run.sh copies this to a tmp dir and
+# bind-mounts it read-only at $HERMES_HOME/config.yaml — the agent must not be able to
+# repoint its model away from the gateway or disable the guard plugin (no repo copy: it
+# would be agent-writable and read by the NEXT run).
+model:
+  provider: custom
+  model: qwen3-35b                      # must be a [gateway.models] key in policy.toml
+  base_url: http://127.0.0.1:8787/v1    # the guard gateway: the only door to any model
+  api_key: demo-key-change-me           # gateway principal (loopback-only demo key)
+plugins:
+  enabled: [ai-control-layer]           # the guard bridge (project plugin, mounted read-only)

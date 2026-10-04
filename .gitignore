@@ -8,3 +8,4 @@ eval/results/*
 !eval/results/baseline-*
 .playwright-mcp/
 .serena/
+.hermes/

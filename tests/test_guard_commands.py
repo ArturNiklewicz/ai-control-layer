@@ -83,7 +83,7 @@ def test_irreversible_needs_a_human(repo):
         ("Read", {"file_path": "/etc/passwd"}, "deny"),
         ("Edit", {"file_path": ".env"}, "deny"),
         ("Write", {"file_path": "src/guard/policy.toml"}, "deny"),
-        ("Write", {"file_path": ".claude/settings.json"}, "deny"),
+        ("Write", {"file_path": ".hermes/config.yaml"}, "deny"),
         ("Grep", {"pattern": "x", "path": "/"}, "deny"),
         ("WebFetch", {"url": "https://x"}, "deny"),
         ("mcp__serena__find_symbol", {}, "allow"),

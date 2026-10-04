@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Run the coding agent inside the sandbox (ADR-0001).
-#   src/guard/sandbox/run.sh            # claude, interactive
+#   src/guard/sandbox/run.sh            # hermes, interactive
 #   src/guard/sandbox/run.sh selftest   # attack tests + full suite, inside the box
-#   src/guard/sandbox/run.sh login      # one-time Claude login (opens auth domains)
 #   src/guard/sandbox/run.sh exec CMD   # any command inside the box
 
 # -e: stop przy 1. błędzie · -u: nieustawiona zmienna = błąd · -o pipefail: a|b pada, gdy pada którykolwiek
@@ -12,21 +11,23 @@ REPO=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
 IMAGE=guard-sandbox                           # nazwa (tag) obrazu
 # macOS: helper haseł Docker Desktop bywa poza PATH; na Linux/WSL katalogu brak = zero efektu
 PATH="$PATH:/Applications/Docker.app/Contents/Resources/bin"
-DGX=100.117.237.101:8006                      # vLLM do NER PII (tailnet), ip:port
-HOSTS=(api.anthropic.com)                     # domeny, do których agent może się łączyć
-# ${1:-} = 1. argument albo "" (bez tego set -u wywala przy braku argumentów) · A && B = B tylko gdy A prawdziwe
-[ "${1:-}" = login ] && HOSTS+=(claude.ai console.anthropic.com platform.claude.com)
+DGX=100.117.237.101:8006                      # vLLM do NER PII i modelu agenta (tailnet), ip:port
+HOSTS=()                                      # domeny, do których agent może się łączyć; puste = tylko DGX + sink
+# model z policy.toml wskazuje na bramę strażnika (127.0.0.1 w pudle), a brama na DGX — poza tym egress zamknięty
 
 # mktemp -d = nowy, unikalny, pusty katalog tymczasowy · trap '…' EXIT = sprzątnij przy wyjściu, też po błędzie
 ctx=$(mktemp -d); trap 'rm -rf "$ctx"' EXIT   # kontekst buildu: nigdy całe repo (.env zostaje poza obrazem)
 # {a,b} = rozwinięcie nawiasów → …/Dockerfile …/entrypoint.sh
-cp "$REPO"/pyproject.toml "$REPO"/uv.lock "$REPO"/src/guard/sandbox/{Dockerfile,entrypoint.sh} "$ctx"
+cp "$REPO"/pyproject.toml "$REPO"/uv.lock "$REPO"/src/guard/sandbox/{Dockerfile,entrypoint.sh,hermes-requirements.txt} "$ctx"
 # -q: cicho, wypisz tylko ID obrazu · -t: nadaj nazwę · >/dev/null: wyrzuć ID (stdout); błędy (stderr) dalej widać
 docker build -q -t "$IMAGE" "$ctx" >/dev/null
 rm -rf "$ctx"                                 # od razu: exec na dole podmienia proces, więc trap EXIT już nie odpali
 
 allow=("$DGX") add_host=()                    # allow = ip:port dla firewalla · add_host = flagi --add-host dla dockera
-for h in "${HOSTS[@]}"; do                    # "${a[@]}" = każdy element osobno · DNS robimy tu, bo w pudle jest zablokowany
+# DGX wykrywalny z hosta? tailnet może leżeć — kontener wtedy NIE zawodzi testu, który wymaga DGX
+if python3 -c "import socket;socket.create_connection(('${DGX%%:*}',${DGX##*:}),timeout=3)" 2>/dev/null; then dgx_state=reachable; else dgx_state=unreachable; fi
+# ${HOSTS[@]+"${HOSTS[@]}"} = rozwiń tylko gdy niepusta (bash 3.2 + set -u wywala się na pustej tablicy)
+for h in ${HOSTS[@]+"${HOSTS[@]}"}; do        # "${a[@]}" = każdy element osobno · DNS robimy tu, bo w pudle jest zablokowany
   # getaddrinfo → krotki (rodzina, typ, proto, nazwa, adres); a[4] = adres = (ip, port) → a[4][0] = samo ip
   # AF_INET = tylko IPv4 (IPv6 w pudle i tak zamknięte) · {…} = zbiór bez duplikatów · print(*x) = elementy po spacji
   for ip in $(python3 -c "import socket,sys;print(*sorted({a[4][0] for a in socket.getaddrinfo(sys.argv[1],443,socket.AF_INET)}))" "$h"); do
@@ -37,17 +38,29 @@ done
 # case = switch · ;; = koniec gałęzi · esac = "case" wspak · * = wszystko inne
 case "${1:-}" in
   selftest) cmd=(uv run pytest -q -p no:cacheprovider tests) ;;   # no:cacheprovider = bez .pytest_cache
-  exec)     shift; cmd=("$@") ;;              # shift = wyrzuć 1. arg, "$@" = reszta · np. run.sh exec claude --version
-  login)    cmd=(claude /login) ;;
-  *)        cmd=(claude "$@") ;;              # domyślnie wszystkie argumenty idą do claude
+  exec)     shift; cmd=("$@") ;;               # shift = wyrzuć 1. arg, "$@" = reszta · np. run.sh exec hermes --version
+  *)        cmd=(hermes "$@") ;;                # domyślnie wszystkie argumenty idą do hermes
 esac
+
+# The guard plugin is a Hermes *project* plugin (Hermes scans $PWD/.hermes/plugins, PWD=/repo).
+# Both it and the Hermes config are bind-mounted read-only: the agent must not be able to
+# disable its guard or repoint its model (same rule as .git ro). The config lives in a tmp dir
+# (never inside the repo: a repo copy would be agent-writable and read by the NEXT run).
+cfg=$(mktemp -d); trap 'rm -rf "$cfg"' EXIT
+cp "$REPO"/src/guard/adapters/templates/hermes-config.yaml "$cfg"/config.yaml
 
 # .guard is read-only for the agent (consent, vault, audit). Audit events reach the host-side sink over TCP (R2, ADR-0001 §9).
 # [ -L x ] = x to symlink → odmowa (symlink mógłby przekierować montowanie gdzie indziej) · >&2 = na stderr
 g="$REPO/.guard"; [ -L "$g" ] && { echo "refusing symlinked .guard" >&2; exit 1; }
 mkdir -p "$g"; [ -L "$g/audit.jsonl" ] && { echo "refusing symlinked audit.jsonl" >&2; exit 1; }
 # selftest pisze do katalogu tymczasowego: testy nie śmiecą w prawdziwym logu. Sink = jedyny pisarz logu, poza pudłem.
-# Docker Desktop: host-gateway = host; połączenia z kontenera trafiają na 127.0.0.1 hosta. Linux: GUARD_SINK_BIND=<docker0 ip>.
+# Docker Desktop: host-gateway = host; połączenia z kontenera trafiają na 127.0.0.1 hosta.
+# Linux: host-gateway = brama mostka (kontener NIE widzi 127.0.0.1 hosta) → sink musi słuchać na jej ip.
+# Automatyczna detekcja na Linuksie; GUARD_SINK_BIND nadpisuje (rootless/niestandardowa sieć).
+if [ -z "${GUARD_SINK_BIND:-}" ] && [ "$(uname -s)" = Linux ]; then
+  GUARD_SINK_BIND=$(docker network inspect bridge -f '{{range .IPAM.Config}}{{.Gateway}}{{end}}' 2>/dev/null || true)
+fi
+GUARD_SINK_BIND="${GUARD_SINK_BIND:-127.0.0.1}"
 sinkroot="$REPO"; [ "${1:-}" = selftest ] && sinkroot=$(mktemp -d)
 portfile=$(mktemp)
 # host code must not import from paths the agent can write (src/, pyproject.toml, .venv):
@@ -88,17 +101,18 @@ args=(
   --tmpfs /tmp --tmpfs /run --tmpfs /home/agent   # zapisywalne katalogi w RAM, znikają z kontenerem
   --pids-limit 512 --memory 4g --cpus 4       # limity: fork-bomba, RAM, CPU
   -e AGENT_UID="$(id -u)" -e AGENT_GID="$(id -g)"   # agent = twój uid → pliki w repo należą do ciebie, nie do roota
-  -e ALLOW="${allow[*]}"                      # [*] = elementy sklejone spacją w jeden string
+  -e ALLOW="${allow[*]}" -e DGX_STATE="$dgx_state"  # [*] = elementy sklejone spacją w jeden string
   ${add_host[@]+"${add_host[@]}"}
   -v "$REPO":/repo                            # repo do zapisu (agent pracuje na kodzie)…
   -v "$REPO"/.git:/repo/.git:ro               # …ale historia git,
-  -v "$REPO"/.claude:/repo/.claude:ro         #    ustawienia Claude
   -v "$REPO"/src/guard:/repo/src/guard:ro     #    i sam strażnik tylko do odczytu (agent go nie wyłączy)
+  -v "$REPO"/src/guard/adapters/templates/hermes-plugin:/repo/.hermes/plugins/ai-control-layer:ro  # plugin mostek: też read-only
+  -v "$cfg"/config.yaml:/home/agent/.hermes-home/config.yaml:ro  # model = tylko brama strażnika; plugin włączony (tmp dir: repo copy byłby zapisywalny dla agenta)
   -v "$g":/repo/.guard:ro
   ${audit_env[@]+"${audit_env[@]}"}
   ${mask[@]+"${mask[@]}"}                     # sekrety przykryte pustym /dev/null
   --tmpfs /repo/.venv                         # przykrywa venv hosta (macOS ≠ Linux); właściwy jest w /opt/venv
-  -v guard-claude-home:/home/agent/.claude    # nazwany wolumen: login Claude przeżywa restart
+  -v guard-hermes-home:/home/agent/.hermes-home  # nazwany wolumen: config + sesje Hermes przeżywają restart
 )
 # bez exec: trap EXIT musi ubić sink; set -e przekazuje kod wyjścia dockera
 docker run "${args[@]}" "$IMAGE" "${cmd[@]}"
